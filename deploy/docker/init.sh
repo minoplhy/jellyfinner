@@ -12,6 +12,7 @@ usage:
   ./init.sh add-edge NAME URL QUOTA_GB  on the orchestrator node, prints the edge's command
   ./init.sh worker ORCHESTRATOR_URL TOKEN
   ./init.sh edge ORCHESTRATOR_URL TOKEN SIGNING_KEY EDGE_HOSTNAME
+  sudo ./init.sh dirs                   creates this node's data folders
 USAGE
 	exit 2
 }
@@ -81,6 +82,8 @@ ENCODE_MODE=auto
 # Your media, and one parent folder for the library and incoming uploads.
 ORIGINALS_HOST=/srv/originals
 STORE_HOST=/srv/store
+# The database. Back this folder up.
+STATE_HOST=./data/state
 
 JELLYFIN_URL=http://127.0.0.1:8096
 # Create one in Jellyfin under Dashboard, API Keys.
@@ -110,7 +113,7 @@ PUBLIC_HOSTNAME=$1
 PUBLIC_UPSTREAM=127.0.0.1:8096
 CONTROL_HOSTNAME=$2
 ENV
-	echo "Wrote .env. Set JELLYFIN_TOKEN and your paths, then add nodes with ./init.sh add-worker NAME."
+	echo "Wrote .env. Set JELLYFIN_TOKEN and your paths, run sudo ./init.sh dirs, then add nodes with ./init.sh add-worker NAME."
 	;;
 add-worker)
 	[ $# -eq 1 ] || usage
@@ -142,8 +145,10 @@ worker)
 COMPOSE_FILE=compose.worker.yml
 ORCHESTRATOR_URL=$1
 NODE_TOKEN=$2
+# Needs room for a source and its encode at once.
+SCRATCH_HOST=./data/scratch
 ENV
-	echo "Wrote .env. Start with: docker compose up -d"
+	echo "Wrote .env. Run sudo ./init.sh dirs, then start with: docker compose up -d"
 	;;
 edge)
 	[ $# -eq 4 ] || usage
@@ -160,8 +165,35 @@ EDGE_HOSTNAME=$4
 EDGE_BIND=127.0.0.1:8205
 # Pull speed cap in MB per second, so a pull leaves room for viewers.
 EDGE_LIMIT_MB=20
+# Cached files.
+EDGE_HOST=./data/edge
 ENV
-	echo "Wrote .env. Start with: docker compose up -d"
+	echo "Wrote .env. Run sudo ./init.sh dirs, then start with: docker compose up -d"
+	;;
+dirs)
+	[ $# -eq 0 ] || usage
+	need_env
+	# Docker would create a missing folder as root, where our services cannot write.
+	case "$(value COMPOSE_FILE)" in
+	compose.orchestrator*)
+		install -d -o 10001 -g 10001 -m 750 "$(value STATE_HOST)"
+		for dir in "$(value STORE_HOST)" "$(value STORE_HOST)/library" "$(value STORE_HOST)/incoming"; do
+			install -d -o 10001 -g 10001 -m 755 "$dir"
+		done
+		;;
+	compose.worker*)
+		install -d -o 10001 -g 10001 -m 750 "$(value SCRATCH_HOST)"
+		;;
+	compose.edge*)
+		# Group 101 lets the file server read what the pull agent writes.
+		install -d -o 10001 -g 101 -m 2750 "$(value EDGE_HOST)"
+		;;
+	*)
+		echo "init: cannot tell this node's role from COMPOSE_FILE" >&2
+		exit 1
+		;;
+	esac
+	echo "Data folders are ready."
 	;;
 *)
 	usage

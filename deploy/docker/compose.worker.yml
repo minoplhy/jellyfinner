@@ -4,16 +4,13 @@ name: jellyfinner-worker
 
 services:
   worker:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.worker
-    image: ${JELLYFINNER_IMAGE_PREFIX:-jellyfinner}/worker:${JELLYFINNER_TAG:-local}
+    image: ${JELLYFINNER_IMAGE_PREFIX:-ghcr.io/minoplhy/jellyfinner}/worker:${JELLYFINNER_TAG:-latest}
     restart: unless-stopped
     environment:
       ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:?set ORCHESTRATOR_URL in .env}
       NODE_TOKEN: ${NODE_TOKEN:?set NODE_TOKEN in .env}
     volumes:
-      - ${SCRATCH_HOST:-jellyfinner-scratch}:/scratch
+      - ${SCRATCH_HOST:-./data/scratch}:/scratch
     read_only: true
     tmpfs:
       - /tmp
@@ -26,6 +23,3 @@ services:
       interval: 30s
       timeout: 10s
       start_period: 30s
-
-volumes:
-  jellyfinner-scratch:

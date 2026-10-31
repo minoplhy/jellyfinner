@@ -1,0 +1,84 @@
+# Edge node. ./init.sh writes .env, so plain `docker compose up -d` works.
+#
+# One image runs twice. pull writes files and only connects out. serve only
+# reads them, and answers viewers. Each gets only its own secret.
+#
+# TLS comes from any reverse proxy pointed at EDGE_BIND, which is
+# 127.0.0.1:8205 by default. See ../proxy/. If you have none, the caddy profile
+# in COMPOSE_PROFILES gives automatic HTTPS.
+name: jellyfinner-edge
+
+x-image: &image
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile.edge-agent
+  image: ${JELLYFINNER_IMAGE_PREFIX:-jellyfinner}/edge-agent:${JELLYFINNER_TAG:-local}
+
+services:
+  edge-pull:
+    <<: *image
+    restart: unless-stopped
+    command: ["pull", "--dir", "/edge", "--limit-mb", "${EDGE_LIMIT_MB:-20}"]
+    environment:
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:?set ORCHESTRATOR_URL in .env}
+      NODE_TOKEN: ${NODE_TOKEN:?set NODE_TOKEN in .env}
+    volumes:
+      - edge-data:/edge
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 128m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/edge-agent", "health", "pull"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+
+  edge-serve:
+    <<: *image
+    restart: unless-stopped
+    user: "10002:101"
+    command: ["serve", "--addr", "0.0.0.0:8205", "--dir", "/edge"]
+    environment:
+      EDGE_SIGNING_KEY: ${EDGE_SIGNING_KEY:?set EDGE_SIGNING_KEY in .env}
+    ports:
+      - "${EDGE_BIND:-127.0.0.1:8205}:8205"
+    volumes:
+      - edge-data:/edge:ro
+    read_only: true
+    mem_limit: 64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/edge-agent", "health", "serve", "127.0.0.1:8205"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: [caddy]
+    restart: unless-stopped
+    depends_on:
+      - edge-serve
+    environment:
+      EDGE_HOSTNAME: ${EDGE_HOSTNAME:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/edge.Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  edge-data:
+    name: jellyfinner-edge-data
+  caddy-data:
+  caddy-config:

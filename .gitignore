@@ -7,3 +7,5 @@
 *.db-wal
 *.db.lock
 artifacts
+# Node data, from deploy/docker/init.sh.
+deploy/docker/data/

@@ -12,26 +12,46 @@ There are three roles. Any role can run on any machine in any region, and severa
 
 ## Images
 
-Build once on any capable machine, from the repository root, then move the images to your nodes. This saves building on small servers.
+Compose pulls prebuilt `linux/amd64` images from GitHub Container Registry, so nodes build nothing and need only this folder. Every push to the default branch and every `v*` tag publishes new images, through `.github/workflows/images.yml`.
+
+To update a node:
 
 ```sh
-docker build -f deploy/docker/Dockerfile.orchestrator -t jellyfinner/orchestrator:local .
-docker build -f deploy/docker/Dockerfile.worker -t jellyfinner/worker:local .
-docker build -f deploy/docker/Dockerfile.edge-agent -t jellyfinner/edge-agent:local .
+docker compose pull
+docker compose up -d
+```
 
+`latest` changes with every push, so nodes updated at different times can run different versions. To keep every node on one version, set the same tag in each node's `.env`, using a version such as `1.2.3` or a short commit tag such as `sha-c4f5714`:
+
+```sh
+JELLYFINNER_TAG=1.2.3
+```
+
+To build from source instead, use the matching `.dev.yaml` file, which needs the whole repository rather than this folder:
+
+| Role | Compose file |
+|---|---|
+| Orchestrator node | `compose.orchestrator.dev.yaml` |
+| Worker node | `compose.worker.dev.yaml` |
+| Edge node | `compose.edge.dev.yaml` |
+
+Point `COMPOSE_FILE` in `.env` at it, then build:
+
+```sh
+COMPOSE_FILE=compose.worker.dev.yaml
+docker compose up -d --build
+```
+
+The GPU and rclone override files work the same way, for example `COMPOSE_FILE=compose.worker.dev.yaml:compose.worker-gpu.yml`.
+
+To avoid building on a small server, build on any capable machine and move the image across:
+
+```sh
+docker compose -f compose.worker.dev.yaml build
 docker save jellyfinner/worker:local | ssh worker-host docker load
 ```
 
-If you push to a registry, set `JELLYFINNER_IMAGE_PREFIX` and `JELLYFINNER_TAG` in `.env`.
-
-On GitHub, `.github/workflows/images.yml` does this for you. Every push to the default branch or a `v*` tag runs the tests, then pushes `linux/amd64` images to GitHub Container Registry. Pull requests only build. To use those images:
-
-```sh
-JELLYFINNER_IMAGE_PREFIX=ghcr.io/your-account/your-repo
-JELLYFINNER_TAG=latest
-```
-
-Then run `docker compose pull` before `docker compose up -d`. Images in a private repository also need `docker login ghcr.io` on each node.
+Then set `JELLYFINNER_IMAGE_PREFIX=jellyfinner` and `JELLYFINNER_TAG=local` in that node's `.env`, so `compose.worker.yml` uses the loaded image.
 
 ## Setup
 
@@ -45,13 +65,22 @@ On the orchestrator node:
 ./init.sh add-edge edge1 https://edge1.example.com 500
 ```
 
-Set `JELLYFIN_TOKEN`, `ORIGINALS_HOST` and `STORE_HOST` in `.env`. The container runs as UID 10001, so:
+Set `JELLYFIN_TOKEN`, `ORIGINALS_HOST` and `STORE_HOST` in `.env`, then create the data folders and start:
 
 ```sh
-sudo mkdir -p /srv/store/library /srv/store/incoming
-sudo chown -R 10001:10001 /srv/store
+sudo ./init.sh dirs
 docker compose up -d
 ```
+
+All data lives in plain folders, not Docker volumes. Run `sudo ./init.sh dirs` on every node, because our containers run as UID 10001 and Docker would create a missing folder as root.
+
+| Role | Setting in `.env` | Default | Holds |
+|---|---|---|---|
+| Orchestrator | `STATE_HOST` | `./data/state` | The database, which is the part to back up |
+| Worker | `SCRATCH_HOST` | `./data/scratch` | Sources and encodes in progress |
+| Edge | `EDGE_HOST` | `./data/edge` | Cached files |
+
+The Caddy and Jellyfin profiles keep their data under `./data/` too. The `.dev.yaml` files still use Docker volumes.
 
 Library and incoming must sit under one mount, because a rename cannot cross two mounts. The orchestrator refuses to start if it would fail.
 
@@ -59,6 +88,7 @@ The `add-worker` and `add-edge` commands each print one command. Run it on that 
 
 ```sh
 ./init.sh worker https://control.example.com GENERATED_TOKEN
+sudo ./init.sh dirs
 docker compose up -d
 ```
 

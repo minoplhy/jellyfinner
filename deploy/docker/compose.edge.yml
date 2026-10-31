@@ -9,10 +9,7 @@
 name: jellyfinner-edge
 
 x-image: &image
-  build:
-    context: ../..
-    dockerfile: deploy/docker/Dockerfile.edge-agent
-  image: ${JELLYFINNER_IMAGE_PREFIX:-jellyfinner}/edge-agent:${JELLYFINNER_TAG:-local}
+  image: ${JELLYFINNER_IMAGE_PREFIX:-ghcr.io/minoplhy/jellyfinner}/edge-agent:${JELLYFINNER_TAG:-latest}
 
 services:
   edge-pull:
@@ -23,7 +20,7 @@ services:
       ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:?set ORCHESTRATOR_URL in .env}
       NODE_TOKEN: ${NODE_TOKEN:?set NODE_TOKEN in .env}
     volumes:
-      - edge-data:/edge
+      - ${EDGE_HOST:-./data/edge}:/edge
     read_only: true
     tmpfs:
       - /tmp
@@ -48,7 +45,7 @@ services:
     ports:
       - "${EDGE_BIND:-127.0.0.1:8205}:8205"
     volumes:
-      - edge-data:/edge:ro
+      - ${EDGE_HOST:-./data/edge}:/edge:ro
     read_only: true
     mem_limit: 64m
     cap_drop:
@@ -74,11 +71,5 @@ services:
       - "443:443"
     volumes:
       - ./caddy/edge.Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-
-volumes:
-  edge-data:
-    name: jellyfinner-edge-data
-  caddy-data:
-  caddy-config:
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config

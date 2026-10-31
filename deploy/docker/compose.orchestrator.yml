@@ -10,10 +10,7 @@
 name: jellyfinner-orchestrator
 
 x-app: &app
-  build:
-    context: ../..
-    dockerfile: deploy/docker/Dockerfile.orchestrator
-  image: ${JELLYFINNER_IMAGE_PREFIX:-jellyfinner}/orchestrator:${JELLYFINNER_TAG:-local}
+  image: ${JELLYFINNER_IMAGE_PREFIX:-ghcr.io/minoplhy/jellyfinner}/orchestrator:${JELLYFINNER_TAG:-latest}
   restart: unless-stopped
   network_mode: host
   env_file: .env
@@ -26,7 +23,7 @@ x-app: &app
   volumes:
     - ${ORIGINALS_HOST:-/srv/originals}:/originals:ro
     - ${STORE_HOST:-/srv/store}:/store
-    - jellyfinner-state:/var/lib/jellyfinner
+    - ${STATE_HOST:-./data/state}:/var/lib/jellyfinner
   read_only: true
   tmpfs:
     - /tmp
@@ -63,8 +60,8 @@ services:
     env_file: .env
     volumes:
       - ./caddy/orchestrator.Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config
 
   jellyfin:
     image: jellyfin/jellyfin:latest
@@ -72,14 +69,6 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - jellyfin-config:/config
-      - jellyfin-cache:/cache
+      - ./data/jellyfin/config:/config
+      - ./data/jellyfin/cache:/cache
       - ${STORE_HOST:-/srv/store}/library:/media:ro
-
-volumes:
-  jellyfinner-state:
-    name: jellyfinner-state
-  caddy-data:
-  caddy-config:
-  jellyfin-config:
-  jellyfin-cache:

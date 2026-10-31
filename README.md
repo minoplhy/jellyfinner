@@ -4,8 +4,6 @@ Remote encoding for Jellyfin, for when your server and your compute are in diffe
 
 Stretching Jellyfin's transcoder across a slow link is fragile, so Jellyfinner treats compute as a batch encoding farm. A worker pulls the whole file, encodes it, verifies it, and publishes a direct-play MP4 back into the library. Jellyfin streams finished files and never transcodes.
 
-> **Status:** all parts have run together in containers on one machine, with real Jellyfin, real reverse proxies, two workers and two edge nodes. Nothing has run on separate servers or real client apps yet. See [planning.md](planning.md) for what still needs proving.
-
 ## How it works
 
 Jellyfinner has three roles. Any role can run on any machine in any region, and several can share one machine. You can run many workers and edge nodes.

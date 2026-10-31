@@ -37,7 +37,7 @@ Follow the orchestrator setup in [docker/README.md](docker/README.md). Point `OR
 
 ## 3. Worker node
 
-Run `./init.sh add-worker worker1` on the orchestrator, run the command it prints on the worker, then `docker compose up -d` on both.
+Run `./init.sh add-worker worker1` on the orchestrator, run the command it prints on the worker, then `sudo ./init.sh dirs` there, then `docker compose up -d` on both.
 
 Queue the episode:
 
@@ -68,7 +68,7 @@ Add a new library pointing at `STORE_HOST/library`, and create a test user with 
 
 ## 5. Edge node
 
-Run `./init.sh add-edge edge1 https://edge1.example.com 500` on the orchestrator, run the printed command on the edge node, then `docker compose up -d` on both. Give the node HTTPS with the `caddy` profile or your own proxy.
+Run `./init.sh add-edge edge1 https://edge1.example.com 500` on the orchestrator, run the printed command on the edge node, then `sudo ./init.sh dirs` there, then `docker compose up -d` on both. Give the node HTTPS with the `caddy` profile or your own proxy.
 
 Pin the episode:
 
