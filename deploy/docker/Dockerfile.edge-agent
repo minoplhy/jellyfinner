@@ -19,4 +19,4 @@ COPY --from=build /out/edge-agent /edge-agent
 COPY --from=build --chown=10001:101 /out/edge /edge
 USER 10001:101
 ENTRYPOINT ["/edge-agent"]
-CMD ["pull", "--dir", "/edge", "--limit-mb", "20"]
+CMD ["pull"]

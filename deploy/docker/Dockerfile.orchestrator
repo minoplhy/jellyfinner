@@ -18,5 +18,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && install -d -o 10001 -g 10001 -m 750 /var/lib/jellyfinner
 COPY --from=build /out/orchestrator /usr/local/bin/orchestrator
 USER 10001:10001
-ENTRYPOINT ["orchestrator", "--env", "/nonexistent"]
+# Fixed paths inside the image, so a compose file only sets what is its own.
+# Binding every interface is safe here, because the published port decides the
+# exposure. Proxies on a private network may name the real client.
+ENV JELLYFINNER_IN_CONTAINER=1 \
+    DB_PATH=/var/lib/jellyfinner/state.db \
+    ORIGINALS_DIR=/originals \
+    LIBRARY_DIR=/store/library \
+    INCOMING_DIR=/store/incoming \
+    CONTROL_ADDR=0.0.0.0:8200 \
+    ROUTER_ADDR=0.0.0.0:8204 \
+    TRUSTED_PROXIES=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7
+ENTRYPOINT ["orchestrator"]
 CMD ["serve"]

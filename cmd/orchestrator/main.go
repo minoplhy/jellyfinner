@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"text/tabwriter"
@@ -22,6 +23,7 @@ import (
 	"jellyfinner/internal/jellyfin"
 	"jellyfinner/internal/notify"
 	"jellyfinner/internal/orchestrator"
+	"jellyfinner/internal/prepare"
 	"jellyfinner/internal/queue"
 	"jellyfinner/internal/web"
 )
@@ -31,6 +33,13 @@ const usage = `usage: orchestrator [--env FILE] COMMAND
   serve
   router                       proxy in front of Jellyfin, a separate process
   health serve|router          exits non-zero if that process is not listening
+  doctor                       checks settings, folders, database and Jellyfin
+  prepare --owner UID:GID PATH[:MODE]...  creates data folders, run once as root
+  node add NAME [--allow CIDR,...]
+  node add NAME --edge --url URL --quota-gb N [--allow CIDR,...]
+  node list
+  node remove NAME
+  node rotate NAME             issues a new token, and the old one stops working
   switch-mode auto|manual      run with serve stopped, after changing ENCODE_MODE
   backfill start|pause|status  start needs auto mode
   edge list
@@ -65,6 +74,12 @@ func main() {
 		err = router(*envFile)
 	case "health":
 		err = health(*envFile, args[1:])
+	case "doctor":
+		err = runDoctor(*envFile)
+	case "prepare":
+		err = prepare.Command(args[1:])
+	case "node":
+		err = nodeCommand(*envFile, args[1:])
 	case "switch-mode":
 		err = switchMode(*envFile, args[1:])
 	case "backfill":
@@ -118,7 +133,15 @@ func open(envFile string) (*config.Config, *queue.Store, error) {
 	return cfg, store, nil
 }
 
+// waitForFolders covers the moment the prepare service is still running.
+func waitForFolders(envFile string) {
+	if cfg, err := config.Load(envFile); err == nil {
+		prepare.Wait(prepare.WaitFor, filepath.Dir(cfg.DBPath), cfg.IncomingDir, cfg.LibraryDir)
+	}
+}
+
 func serve(envFile string) error {
+	waitForFolders(envFile)
 	cfg, store, err := open(envFile)
 	if err != nil {
 		return err
@@ -129,15 +152,15 @@ func serve(envFile string) error {
 		return err
 	}
 	defer release()
-	if len(cfg.Nodes) == 0 {
-		return errors.New("NODE_TOKENS must list at least one node")
+	if cfg.EdgeTokenKey, err = store.EnsureSecret("edge_token_key"); err != nil {
+		return err
 	}
 	if err := cfg.CheckFilesystems(); err != nil {
 		return err
 	}
 	if cfg.TLSCert == "" {
 		// The same rule workers enforce, applied to the listening side.
-		if err := config.CheckControlURL("http://" + cfg.ControlAddr); err != nil {
+		if err := config.CheckListenAddr(cfg.ControlAddr); err != nil {
 			return fmt.Errorf("CONTROL_ADDR without TLS_CERT: %w", err)
 		}
 	}
@@ -188,7 +211,7 @@ func serve(envFile string) error {
 	serveErr := make(chan error, 4)
 	var webhook *http.Server
 	if cfg.Mode == config.ModeManual {
-		if err := config.CheckControlURL("http://" + cfg.WebhookAddr); err != nil {
+		if err := config.CheckListenAddr(cfg.WebhookAddr); err != nil {
 			return fmt.Errorf("WEBHOOK_ADDR: %w", err)
 		}
 		webhook = &http.Server{Addr: cfg.WebhookAddr, Handler: svc.WebhookHandler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: time.Minute}
@@ -199,7 +222,7 @@ func serve(envFile string) error {
 	if cfg.WebAddr != "" {
 		admin := web.New(svc, jellyfin.New(cfg.JellyfinURL, cfg.JellyfinToken), control.LastSeen, logger)
 		if cfg.WebTLSCert == "" {
-			if err := config.CheckControlURL("http://" + cfg.WebAddr); err != nil {
+			if err := config.CheckListenAddr(cfg.WebAddr); err != nil {
 				return fmt.Errorf("WEB_ADDR without WEB_TLS_CERT: %w", err)
 			}
 		}
@@ -214,7 +237,7 @@ func serve(envFile string) error {
 		}()
 	}
 	if cfg.MetricsAddr != "" {
-		if err := config.CheckControlURL("http://" + cfg.MetricsAddr); err != nil {
+		if err := config.CheckListenAddr(cfg.MetricsAddr); err != nil {
 			return fmt.Errorf("METRICS_ADDR: %w", err)
 		}
 		srv := &http.Server{Addr: cfg.MetricsAddr, Handler: svc.MetricsHandler(), ReadHeaderTimeout: 10 * time.Second}
@@ -237,6 +260,9 @@ func serve(envFile string) error {
 		serveErr <- server.ListenAndServe()
 	}()
 	logger.Printf("orchestrator running, mode %s, control API on %s", cfg.Mode, cfg.ControlAddr)
+	if nodes, err := store.LoadNodes(); err == nil && len(nodes) == 0 {
+		logger.Print("no nodes yet: add a worker with orchestrator node add NAME")
+	}
 
 	select {
 	case err = <-serveErr:

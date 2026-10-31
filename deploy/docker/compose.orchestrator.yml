@@ -1,29 +1,48 @@
-# Orchestrator node. ./init.sh writes .env, so plain `docker compose up -d` works.
-#
-# Profiles, set in COMPOSE_PROFILES in .env:
-#   router    proxy in front of Jellyfin, for edge delivery
-#   caddy     automatic HTTPS, if you have no reverse proxy already
-#   jellyfin  run Jellyfin here, if it is not already running
-#
-# Host networking keeps real source addresses, and lets services reach each
-# other on 127.0.0.1. Bind addresses come from .env.
+# Jellyfinner orchestrator node. This file is the whole deployment: paste it
+# into your own compose file, change the values marked EDIT, then run
+#   docker compose up -d
+# It needs no script, no .env and no other files. Check it with
+#   docker compose run --rm orchestrator doctor
+# Add nodes with
+#   docker compose exec orchestrator orchestrator node add worker1
 name: jellyfinner-orchestrator
 
+# Runs the services as this UID:GID. Change it if your media needs another user
+# to read it. It also sets the owner of the folders below.
+x-owner: &owner "10001:10001"
+
 x-app: &app
-  image: ${JELLYFINNER_IMAGE_PREFIX:-ghcr.io/minoplhy/jellyfinner}/orchestrator:${JELLYFINNER_TAG:-latest}
+  image: ghcr.io/minoplhy/jellyfinner/orchestrator:latest # Pin a version to keep nodes matched.
+  user: *owner
   restart: unless-stopped
-  network_mode: host
-  env_file: .env
-  environment:
-    DB_PATH: /var/lib/jellyfinner/state.db
-    ORIGINALS_DIR: /originals
-    # One mount holds both, because a rename cannot cross two mounts.
-    LIBRARY_DIR: /store/library
-    INCOMING_DIR: /store/incoming
+  environment: &settings
+    # auto encodes everything new, manual only what someone asks for.
+    # Change it later only with orchestrator switch-mode.
+    ENCODE_MODE: auto # EDIT
+    # The address workers and edge nodes use. Only node add reads this.
+    CONTROL_URL: https://control.example.com # EDIT
+    # Jellyfin on this host. For the Jellyfin block below, use http://jellyfin:8096.
+    JELLYFIN_URL: http://host.docker.internal:8096 # EDIT
+    # Optional in auto. Create one in Jellyfin under Dashboard, API Keys.
+    JELLYFIN_TOKEN: ""
+    # Where Jellyfin sees the library folder.
+    JELLYFIN_LIBRARY_DIR: /media
+    # Source data backfill may start per day. Size it from encode time on small workers.
+    BACKFILL_DAILY_GB: "2"
+    # Admin UI. Login goes through Jellyfin.
+    WEB_ADDR: 0.0.0.0:8202
+    # Edge delivery: alice=edge1;bob=edge1
+    EDGE_VIEWERS: ""
   volumes:
-    - ${ORIGINALS_HOST:-/srv/originals}:/originals:ro
-    - ${STORE_HOST:-/srv/store}:/store
-    - ${STATE_HOST:-./data/state}:/var/lib/jellyfinner
+    # Your media, read-only. It is never changed.
+    - /srv/originals:/originals:ro # EDIT the left side
+    # One parent folder for the library and incoming uploads, on one filesystem.
+    - /srv/store:/store # EDIT the left side
+    # The database, which holds node tokens. Back this up and keep it private.
+    - ./data/state:/var/lib/jellyfinner
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  networks: [jellyfinner]
   read_only: true
   tmpfs:
     - /tmp
@@ -33,42 +52,89 @@ x-app: &app
     - no-new-privileges:true
 
 services:
+  # Creates the data folders with the right owner, then exits, and the services
+  # wait for it. There is no depends_on, because on Podman that stops a crashed
+  # service restarting. It never touches your originals, or anything inside a folder.
+  orchestrator-init:
+    <<: *app
+    user: "0:0"
+    restart: "no"
+    command: ["prepare", "--owner", *owner, "/var/lib/jellyfinner:750", "/store:755", "/store/library:755", "/store/incoming:755"]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+
   orchestrator:
     <<: *app
+    ports:
+      # Point your reverse proxy at these. To reach them from a proxy in another
+      # compose project, join its network instead, as shown at the end.
+      - 127.0.0.1:8200:8200 # Control API, for workers and edge nodes
+      - 127.0.0.1:8202:8202 # Admin UI
     healthcheck:
-      test: ["CMD", "orchestrator", "--env", "/nonexistent", "health", "serve"]
+      test: ["CMD", "orchestrator", "health", "serve"]
       interval: 30s
       timeout: 10s
       start_period: 20s
 
-  # A separate process, so restarting the orchestrator leaves Jellyfin reachable.
-  router:
-    <<: *app
-    profiles: [router]
-    command: ["router"]
-    healthcheck:
-      test: ["CMD", "orchestrator", "--env", "/nonexistent", "health", "router"]
-      interval: 30s
-      timeout: 10s
-      start_period: 20s
+  # Edge delivery. A separate process, so restarting the orchestrator leaves
+  # Jellyfin reachable. Uncomment, and point your public hostname here once
+  # it is proven.
+  #
+  # router:
+  #   <<: *app
+  #   command: ["router"]
+  #   ports:
+  #     - 127.0.0.1:8204:8204
+  #   healthcheck:
+  #     test: ["CMD", "orchestrator", "health", "router"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     start_period: 20s
 
-  caddy:
-    image: caddy:2-alpine
-    profiles: [caddy]
-    restart: unless-stopped
-    network_mode: host
-    env_file: .env
-    volumes:
-      - ./caddy/orchestrator.Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./data/caddy/data:/data
-      - ./data/caddy/config:/config
+  # Automatic HTTPS, if you have no reverse proxy. It needs ports 80 and 443, and
+  # DNS for both hostnames. Use http://router:8204 for viewers once proven.
+  #
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   entrypoint: ["sh", "-c"]
+  #   command:
+  #     - |
+  #       caddy run --adapter caddyfile --config - <<'CADDY'
+  #       tv.example.com {
+  #         reverse_proxy host.docker.internal:8096
+  #       }
+  #       control.example.com {
+  #         reverse_proxy orchestrator:8200 {
+  #           flush_interval -1
+  #         }
+  #       }
+  #       CADDY
+  #   ports:
+  #     - 80:80
+  #     - 443:443
+  #   extra_hosts:
+  #     - host.docker.internal:host-gateway
+  #   networks: [jellyfinner]
+  #   volumes:
+  #     - ./data/caddy/data:/data
+  #     - ./data/caddy/config:/config
 
-  jellyfin:
-    image: jellyfin/jellyfin:latest
-    profiles: [jellyfin]
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./data/jellyfin/config:/config
-      - ./data/jellyfin/cache:/cache
-      - ${STORE_HOST:-/srv/store}/library:/media:ro
+  # Jellyfin itself, if it is not already running. Point the library at /media.
+  #
+  # jellyfin:
+  #   image: jellyfin/jellyfin:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - 8096:8096
+  #   networks: [jellyfinner]
+  #   volumes:
+  #     - ./data/jellyfin/config:/config
+  #     - ./data/jellyfin/cache:/cache
+  #     - /srv/store/library:/media:ro # EDIT the left side, as above
+
+# The name is fixed, so a worker on this machine can join it. For a reverse proxy
+# in another compose project, add its network here with external: true, and
+# list it under the orchestrator's networks. Then proxy to orchestrator:8200.
+networks:
+  jellyfinner:
+    name: jellyfinner

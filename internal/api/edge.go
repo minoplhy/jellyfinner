@@ -26,7 +26,7 @@ func nodeName(r *http.Request) string {
 // and a worker can never reach edge orders or files.
 func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.EdgeNode(nodeName(r)) == nil {
+		if s.store.EdgeNode(nodeName(r)) == nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -36,7 +36,7 @@ func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) workerOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.EdgeNode(nodeName(r)) != nil {
+		if s.store.EdgeNode(nodeName(r)) != nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

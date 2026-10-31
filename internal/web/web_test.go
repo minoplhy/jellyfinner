@@ -60,7 +60,6 @@ func newFixture(t *testing.T) *fixture {
 		Mode: config.ModeAuto, OriginalsDir: filepath.Join(root, "o"), LibraryDir: filepath.Join(root, "l"),
 		IncomingDir: filepath.Join(root, "i"), RemoteOriginals: "origin:/o", RemoteIncoming: "origin:/i",
 		LeaseFor: time.Minute, MaxAttempts: 2, StableFor: time.Minute, DeleteGrace: time.Hour, MassDeletePercent: 20,
-		Nodes: []config.Node{{Name: "worker1"}},
 	}
 	for _, d := range []string{cfg.OriginalsDir, cfg.LibraryDir, cfg.IncomingDir} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
@@ -73,6 +72,9 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { store.Close() })
 	store.RetryDelay = 0
+	if err := store.AddNode(&queue.Node{Name: "worker1", Kind: queue.NodeWorker, TokenHash: "x"}); err != nil {
+		t.Fatal(err)
+	}
 	f := &fixture{t: t, store: store, cfg: cfg, auth: &fakeAuth{}, now: time.Unix(2000000, 0)}
 	store.Now = func() time.Time { return f.now }
 	logger := log.New(io.Discard, "", 0)
@@ -418,7 +420,9 @@ func TestDashboardShowsNodeAndBackfill(t *testing.T) {
 
 func TestNodesPageAndCacheAction(t *testing.T) {
 	f := newFixture(t)
-	f.cfg.EdgeNodes = []config.EdgeNode{{Name: "edge1", URL: "https://edge1.example.com", QuotaBytes: 1000}}
+	if err := f.store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: 1000}); err != nil {
+		t.Fatal(err)
+	}
 	f.add("a.mkv")
 	info, err := os.Stat(filepath.Join(f.cfg.OriginalsDir, "a.mkv"))
 	if err != nil {

@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"jellyfinner/internal/config"
 	"jellyfinner/internal/control"
 	"jellyfinner/internal/transfer"
 )
@@ -23,7 +22,7 @@ import (
 const sourceSize = 70 << 20
 
 // transferFixture has one claimed job, whose source is sourceSize bytes.
-func transferFixture(t *testing.T, nodes []config.Node) (*fixture, *control.ClaimResponse, []byte) {
+func transferFixture(t *testing.T, nodes []testNode) (*fixture, *control.ClaimResponse, []byte) {
 	t.Helper()
 	f := newFixture(t, nodes)
 	f.cfg.OriginalsDir = t.TempDir()
@@ -103,7 +102,7 @@ func TestPullAndPush(t *testing.T) {
 }
 
 func TestTransferNeedsLiveLease(t *testing.T) {
-	nodes := []config.Node{{Name: "one", Token: token}, {Name: "two", Token: "token-for-node-two-0123456789abcdef"}}
+	nodes := []testNode{{Name: "one", Token: token}, {Name: "two", Token: "token-for-node-two-0123456789abcdef"}}
 	f, claim, _ := transferFixture(t, nodes)
 	ctx := context.Background()
 	id := claim.Job.ID
@@ -140,9 +139,8 @@ func TestTransferNeedsLiveLease(t *testing.T) {
 }
 
 func TestEdgeTokenCannotTransfer(t *testing.T) {
-	nodes := []config.Node{{Name: "worker1", Token: token}, {Name: "edge1", Token: "token-for-edge-one-0123456789abcdef"}}
+	nodes := []testNode{{Name: "worker1", Token: token}, {Name: "edge1", Token: "token-for-edge-one-0123456789abcdef", Edge: true}}
 	f, claim, _ := transferFixture(t, nodes)
-	f.cfg.EdgeNodes = []config.EdgeNode{{Name: "edge1"}}
 	edgeClient, err := control.NewClient(f.server.URL, nodes[1].Token)
 	if err != nil {
 		t.Fatal(err)

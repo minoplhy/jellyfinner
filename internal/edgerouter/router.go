@@ -130,7 +130,7 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 	if err != nil {
 		return "", err
 	}
-	node := rt.cfg.EdgeNode(rt.cfg.EdgeViewers[user])
+	node := rt.store.EdgeNode(rt.cfg.EdgeViewers[user])
 	if node == nil {
 		return "", nil
 	}

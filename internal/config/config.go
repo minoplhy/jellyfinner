@@ -39,14 +39,6 @@ func ParseMode(s string) (Mode, error) {
 	return "", fmt.Errorf("ENCODE_MODE must be auto or manual, got %q", s)
 }
 
-// Node is a worker or edge agent allowed on the control API. An empty Allow
-// list accepts any source address.
-type Node struct {
-	Name  string
-	Token string
-	Allow []netip.Prefix
-}
-
 // Config holds every orchestrator setting.
 type Config struct {
 	Mode Mode
@@ -61,9 +53,11 @@ type Config struct {
 	RemoteIncoming  string
 
 	ControlAddr string
-	TLSCert     string
-	TLSKey      string
-	Nodes       []Node
+	// ControlURL is how nodes reach the control API. It is only printed, for
+	// pasting into a new node's settings.
+	ControlURL string
+	TLSCert    string
+	TLSKey     string
 
 	ScanInterval      time.Duration
 	StableFor         time.Duration
@@ -91,9 +85,8 @@ type Config struct {
 	// BackfillDailyBytes caps how much source data backfill may start per UTC day.
 	BackfillDailyBytes int64
 
-	// EdgeNodes are the nodes that may cache encodes. They also need an entry in
-	// NODE_TOKENS. EdgeViewers maps a Jellyfin username to its node.
-	EdgeNodes    []EdgeNode
+	// EdgeViewers maps a Jellyfin username to its node. EdgeTokenKey comes from
+	// the database, not the environment.
 	EdgeViewers  map[string]string
 	EdgeTokenKey string
 	EdgeURLTTL   time.Duration
@@ -128,10 +121,6 @@ func parse(get func(string) string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodes, err := ParseNodes(get("NODE_TOKENS"))
-	if err != nil {
-		return nil, err
-	}
 	c := &Config{
 		Mode:               mode,
 		DBPath:             get("DB_PATH"),
@@ -141,9 +130,9 @@ func parse(get func(string) string) (*Config, error) {
 		RemoteOriginals:    strings.TrimSuffix(get("REMOTE_ORIGINALS"), "/"),
 		RemoteIncoming:     strings.TrimSuffix(get("REMOTE_INCOMING"), "/"),
 		ControlAddr:        or(get("CONTROL_ADDR"), "127.0.0.1:8200"),
+		ControlURL:         strings.TrimSuffix(get("CONTROL_URL"), "/"),
 		TLSCert:            get("TLS_CERT"),
 		TLSKey:             get("TLS_KEY"),
-		Nodes:              nodes,
 		JellyfinURL:        strings.TrimSuffix(get("JELLYFIN_URL"), "/"),
 		JellyfinToken:      get("JELLYFIN_TOKEN"),
 		JellyfinLibraryDir: get("JELLYFIN_LIBRARY_DIR"),
@@ -154,7 +143,6 @@ func parse(get func(string) string) (*Config, error) {
 		WebTLSCert:         get("WEB_TLS_CERT"),
 		WebTLSKey:          get("WEB_TLS_KEY"),
 		MetricsAddr:        get("METRICS_ADDR"),
-		EdgeTokenKey:       get("EDGE_TOKEN_KEY"),
 		RouterAddr:         or(get("ROUTER_ADDR"), "127.0.0.1:8204"),
 		DiscordURL:         get("NOTIFY_DISCORD_URL"),
 		NtfyURL:            get("NOTIFY_NTFY_URL"),
@@ -209,9 +197,6 @@ func parse(get func(string) string) (*Config, error) {
 	if c.TrustedProxies, err = ParsePrefixes(get("TRUSTED_PROXIES")); err != nil {
 		return nil, fmt.Errorf("TRUSTED_PROXIES: %w", err)
 	}
-	if c.EdgeNodes, err = ParseEdgeNodes(get("EDGE_NODES")); err != nil {
-		return nil, err
-	}
 	if c.EdgeViewers, err = ParseEdgeViewers(get("EDGE_VIEWERS")); err != nil {
 		return nil, err
 	}
@@ -249,9 +234,6 @@ func (c *Config) validate() error {
 			return errors.New("manual mode needs WEBHOOK_TOKEN of at least 32 characters")
 		}
 	}
-	if err := c.validateEdge(); err != nil {
-		return err
-	}
 	if c.WebAddr != "" && (c.JellyfinURL == "") {
 		return errors.New("WEB_ADDR needs JELLYFIN_URL, because login goes through Jellyfin")
 	}
@@ -271,77 +253,6 @@ func (c *Config) validate() error {
 		return errors.New("ORIGINALS_DIR and LIBRARY_DIR must not contain each other")
 	}
 	return nil
-}
-
-func (c *Config) validateEdge() error {
-	if len(c.EdgeNodes) == 0 {
-		return nil
-	}
-	if len(c.EdgeTokenKey) < 32 {
-		return errors.New("EDGE_NODES needs EDGE_TOKEN_KEY of at least 32 characters")
-	}
-	for _, n := range c.EdgeNodes {
-		found := false
-		for _, node := range c.Nodes {
-			found = found || node.Name == n.Name
-		}
-		if !found {
-			return fmt.Errorf("edge node %q needs a token in NODE_TOKENS", n.Name)
-		}
-	}
-	for user, node := range c.EdgeViewers {
-		if c.EdgeNode(node) == nil {
-			return fmt.Errorf("EDGE_VIEWERS: %s is assigned to unknown node %q", user, node)
-		}
-	}
-	return nil
-}
-
-// EdgeNode finds an edge node by name.
-func (c *Config) EdgeNode(name string) *EdgeNode {
-	for i := range c.EdgeNodes {
-		if c.EdgeNodes[i].Name == name {
-			return &c.EdgeNodes[i]
-		}
-	}
-	return nil
-}
-
-// EdgeNode is a small file server near some viewers.
-type EdgeNode struct {
-	Name       string
-	URL        string
-	QuotaBytes int64
-	SigningKey string
-}
-
-// ParseEdgeNodes reads "name=https://host,quotaGB,signingkey;...".
-func ParseEdgeNodes(s string) ([]EdgeNode, error) {
-	var nodes []EdgeNode
-	for _, entry := range strings.Split(s, ";") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		name, rest, ok := strings.Cut(entry, "=")
-		parts := strings.Split(rest, ",")
-		if !ok || name == "" || len(parts) != 3 {
-			return nil, fmt.Errorf("EDGE_NODES: entry for %q must be name=url,quotaGB,key", name)
-		}
-		u, err := url.Parse(parts[0])
-		if err != nil || u.Scheme != "https" || u.Host == "" {
-			return nil, fmt.Errorf("EDGE_NODES: node %q needs an https URL", name)
-		}
-		quota, err := strconv.Atoi(parts[1])
-		if err != nil || quota <= 0 {
-			return nil, fmt.Errorf("EDGE_NODES: node %q needs a positive quota in GB", name)
-		}
-		if len(parts[2]) < 32 {
-			return nil, fmt.Errorf("EDGE_NODES: signing key for %q must be at least 32 characters", name)
-		}
-		nodes = append(nodes, EdgeNode{Name: name, URL: parts[0], QuotaBytes: int64(quota) * 1e9, SigningKey: parts[2]})
-	}
-	return nodes, nil
 }
 
 // ParseEdgeViewers reads "username=node;...".
@@ -436,45 +347,10 @@ func ParsePrefixes(s string) ([]netip.Prefix, error) {
 	return out, nil
 }
 
-// ParseNodes reads "name=token@10.0.0.2/32+10.0.1.0/24;other=token". The
-// allowlist after @ is optional.
-func ParseNodes(s string) ([]Node, error) {
-	var nodes []Node
-	seen := map[string]bool{}
-	for _, entry := range strings.Split(s, ";") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		name, rest, ok := strings.Cut(entry, "=")
-		if !ok || name == "" {
-			return nil, fmt.Errorf("NODE_TOKENS: entry %q must be name=token", name)
-		}
-		token, allow, _ := strings.Cut(rest, "@")
-		if len(token) < 32 {
-			return nil, fmt.Errorf("NODE_TOKENS: token for %q must be at least 32 characters", name)
-		}
-		if seen[name] {
-			return nil, fmt.Errorf("NODE_TOKENS: duplicate node %q", name)
-		}
-		seen[name] = true
-		node := Node{Name: name, Token: token}
-		if allow != "" {
-			for _, cidr := range strings.Split(allow, "+") {
-				prefix, err := netip.ParsePrefix(cidr)
-				if err != nil {
-					return nil, fmt.Errorf("NODE_TOKENS: node %q: %w", name, err)
-				}
-				node.Allow = append(node.Allow, prefix)
-			}
-		}
-		nodes = append(nodes, node)
-	}
-	return nodes, nil
-}
-
-// CheckControlURL enforces the transport rule: HTTPS anywhere, plain HTTP only
-// to a private address, which in practice is a WireGuard peer.
+// CheckControlURL enforces the transport rule for nodes: HTTPS anywhere, plain
+// HTTP only inside a private network. That means a private address, which in
+// practice is a WireGuard peer, or a container network name such as
+// orchestrator or host.docker.internal.
 func CheckControlURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -484,9 +360,13 @@ func CheckControlURL(raw string) error {
 	case "https":
 		return nil
 	case "http":
-		addr, err := netip.ParseAddr(u.Hostname())
+		host := u.Hostname()
+		addr, err := netip.ParseAddr(host)
 		if err != nil {
-			return fmt.Errorf("control URL %q: plain http needs a private IP address, not a hostname", raw)
+			if privateName(host) {
+				return nil
+			}
+			return fmt.Errorf("control URL %q: plain http needs a private address or a container network name", raw)
 		}
 		if !addr.IsPrivate() && !addr.IsLoopback() {
 			return fmt.Errorf("control URL %q: plain http is only allowed to a private address", raw)
@@ -494,6 +374,33 @@ func CheckControlURL(raw string) error {
 		return nil
 	}
 	return fmt.Errorf("control URL %q: scheme must be https or http", raw)
+}
+
+// privateName reports whether a hostname cannot be a public one: a single label
+// like a Compose service, or anything under the reserved .internal domain.
+func privateName(host string) bool {
+	return host != "" && (!strings.Contains(host, ".") || strings.HasSuffix(host, ".internal"))
+}
+
+// CheckListenAddr is the same rule for a plain HTTP listener, which must bind a
+// private address. In a container every interface is private to it, and the
+// published port decides the real exposure, so the image may bind them all.
+func CheckListenAddr(listen string) error {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return err
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("%q: plain http needs a private IP address, not a hostname", listen)
+	}
+	if addr.IsUnspecified() && os.Getenv("JELLYFINNER_IN_CONTAINER") == "1" {
+		return nil
+	}
+	if !addr.IsPrivate() && !addr.IsLoopback() {
+		return fmt.Errorf("%q: plain http is only allowed on a private address", listen)
+	}
+	return nil
 }
 
 func readEnvFile(path string) (map[string]string, error) {

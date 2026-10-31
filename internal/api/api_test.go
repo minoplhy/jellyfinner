@@ -23,6 +23,13 @@ import (
 
 const token = "0123456789abcdef0123456789abcdef"
 
+type testNode struct {
+	Name  string
+	Token string
+	Allow []netip.Prefix
+	Edge  bool
+}
+
 type fixture struct {
 	store     *queue.Store
 	cfg       *config.Config
@@ -30,10 +37,10 @@ type fixture struct {
 	client    *control.Client
 	completed int
 	failed    []*queue.Job
-	nodes     []config.Node
+	nodes     []testNode
 }
 
-func newFixture(t *testing.T, nodes []config.Node) *fixture {
+func newFixture(t *testing.T, nodes []testNode) *fixture {
 	t.Helper()
 	store, err := queue.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -42,7 +49,16 @@ func newFixture(t *testing.T, nodes []config.Node) *fixture {
 	t.Cleanup(func() { store.Close() })
 	store.RetryDelay = 0
 
-	cfg := &config.Config{Nodes: nodes, LeaseFor: time.Minute, MaxAttempts: 2}
+	for _, n := range nodes {
+		node := &queue.Node{Name: n.Name, Kind: queue.NodeWorker, TokenHash: queue.HashToken(n.Token), Allow: n.Allow}
+		if n.Edge {
+			node.Kind = queue.NodeEdge
+		}
+		if err := store.AddNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &config.Config{LeaseFor: time.Minute, MaxAttempts: 2}
 	f := &fixture{store: store, nodes: nodes, cfg: cfg}
 	srv := New(cfg, store, Hooks{
 		WorkerJob: func(j *queue.Job) *job.Job {
@@ -66,7 +82,7 @@ func (f *fixture) enqueue(t *testing.T, id string) {
 	}
 }
 
-func allNodes() []config.Node { return []config.Node{{Name: "worker1", Token: token}} }
+func allNodes() []testNode { return []testNode{{Name: "worker1", Token: token}} }
 
 func TestClaimHeartbeatFinish(t *testing.T) {
 	f := newFixture(t, allNodes())
@@ -201,11 +217,11 @@ func TestNoNodesAcceptsNothing(t *testing.T) {
 }
 
 func TestAllowlist(t *testing.T) {
-	allowed := newFixture(t, []config.Node{{Name: "worker1", Token: token, Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}}})
+	allowed := newFixture(t, []testNode{{Name: "worker1", Token: token, Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}}})
 	if got := post(t, allowed.server.URL, "Bearer "+token); got != http.StatusNoContent {
 		t.Errorf("listed address: %d", got)
 	}
-	denied := newFixture(t, []config.Node{{Name: "worker1", Token: token, Allow: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}}})
+	denied := newFixture(t, []testNode{{Name: "worker1", Token: token, Allow: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}}})
 	if got := post(t, denied.server.URL, "Bearer "+token); got != http.StatusForbidden {
 		t.Errorf("unlisted address with a valid token: %d", got)
 	}
@@ -253,8 +269,7 @@ func TestClientRefusesUntrustedCertificate(t *testing.T) {
 func edgeFixture(t *testing.T) (*fixture, *control.Client, string) {
 	t.Helper()
 	worker, edgeToken := token, strings.Repeat("e", 32)
-	f := newFixture(t, []config.Node{{Name: "worker1", Token: worker}, {Name: "edge1", Token: edgeToken}, {Name: "edge2", Token: strings.Repeat("f", 32)}})
-	f.cfg.EdgeNodes = []config.EdgeNode{{Name: "edge1"}, {Name: "edge2"}}
+	f := newFixture(t, []testNode{{Name: "worker1", Token: worker}, {Name: "edge1", Token: edgeToken, Edge: true}, {Name: "edge2", Token: strings.Repeat("f", 32), Edge: true}})
 	f.cfg.EdgeTokenKey = strings.Repeat("k", 32)
 	f.cfg.LibraryDir = t.TempDir()
 	if err := os.WriteFile(filepath.Join(f.cfg.LibraryDir, "a.mp4"), []byte("video bytes"), 0o644); err != nil {
@@ -423,5 +438,45 @@ func TestTrustedProxyNamesTheClient(t *testing.T) {
 				t.Errorf("got %v %v, want %s", got, ok, tt.want)
 			}
 		})
+	}
+}
+
+func TestWhoAmI(t *testing.T) {
+	edgeToken := strings.Repeat("e", 32)
+	f := newFixture(t, []testNode{{Name: "worker1", Token: token}, {Name: "edge1", Token: edgeToken, Edge: true}})
+	me, err := f.client.WhoAmI(context.Background())
+	if err != nil || me.Name != "worker1" || me.Kind != queue.NodeWorker {
+		t.Errorf("worker: %+v, %v", me, err)
+	}
+	f.enqueue(t, "a")
+	edge, err := control.NewClient(f.server.URL, edgeToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if me, err = edge.WhoAmI(context.Background()); err != nil || me.Name != "edge1" || me.Kind != queue.NodeEdge {
+		t.Errorf("edge: %+v, %v", me, err)
+	}
+	wrong, err := control.NewClient(f.server.URL, strings.Repeat("x", 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wrong.WhoAmI(context.Background()); err == nil {
+		t.Error("a wrong token must be refused")
+	}
+	if claim, err := f.client.Claim(context.Background()); err != nil || claim == nil {
+		t.Errorf("whoami must leave the job queued: %v, %v", claim, err)
+	}
+}
+
+func TestRemovedNodeIsRefused(t *testing.T) {
+	f := newFixture(t, allNodes())
+	if got := post(t, f.server.URL, "Bearer "+token); got != http.StatusNoContent {
+		t.Fatalf("before removal: %d", got)
+	}
+	if err := f.store.RemoveNode("worker1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := post(t, f.server.URL, "Bearer "+token); got != http.StatusUnauthorized {
+		t.Errorf("after removal: %d", got)
 	}
 }

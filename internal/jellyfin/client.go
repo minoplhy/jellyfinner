@@ -50,6 +50,11 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, out a
 	return nil
 }
 
+// Check proves the server answers and accepts the token.
+func (c *Client) Check(ctx context.Context) error {
+	return c.do(ctx, http.MethodGet, "/System/Info", nil, nil)
+}
+
 // Refresh asks Jellyfin to scan its libraries. The call returns once the scan
 // is queued, not when it finishes.
 func (c *Client) Refresh(ctx context.Context) error {

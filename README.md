@@ -49,13 +49,19 @@ In this version, surround audio is dropped, image subtitles such as PGS are not 
 
 ## Getting started
 
-Each node takes three commands: copy `deploy/docker/`, run `./init.sh` for its role, then `docker compose up -d`.
+Each role is one compose file. Paste [the orchestrator](deploy/docker/compose.orchestrator.yml), [worker](deploy/docker/compose.worker.yml) or [edge](deploy/docker/compose.edge.yml) file into your own compose file, change the values marked `EDIT`, and run `docker compose up -d`. It needs no script, `.env` or other files.
+
+Add a node from the orchestrator. It prints the settings to paste, and works with no restart:
+
+```sh
+docker compose exec orchestrator orchestrator node add worker1
+```
 
 - [First deployment](deploy/first-run.md): every stage, with a check for each
 - [Docker Compose](deploy/docker/README.md): the main path
 - [systemd on the host](deploy/README.md): the alternative
 
-[.env.example](.env.example) lists every setting.
+`docker compose run --rm SERVICE doctor` checks a node from inside its container. [.env.example](.env.example) lists every setting.
 
 ## Everyday use
 
@@ -74,6 +80,11 @@ orchestrator backfill status
 
 orchestrator edge pin "Movies/Dune (2021)/Dune (2021).mkv" --node edge1
 orchestrator edge list
+
+orchestrator node add worker2
+orchestrator node list
+orchestrator node rotate worker2
+orchestrator node remove worker2
 
 orchestrator switch-mode manual
 ```
@@ -99,7 +110,6 @@ GOFLAGS=-p=1 go test -p 1 ./...
 
 ## Documents
 
-- [planning.md](planning.md): phases, status and known gaps
 - [deploy/first-run.md](deploy/first-run.md): first deployment, stage by stage
 - [deploy/docker/README.md](deploy/docker/README.md): Docker Compose
 - [deploy/README.md](deploy/README.md): host install, backfill and cutover

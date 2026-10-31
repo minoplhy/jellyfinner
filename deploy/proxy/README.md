@@ -1,13 +1,13 @@
 # Reverse proxy examples for an edge node
 
-For operators who already run a reverse proxy. `edge-agent serve` speaks plain HTTP on `EDGE_BIND`, which is `127.0.0.1:8205` by default, and your proxy adds HTTPS. Replace `edge1.example.com` with the node's hostname.
+For operators who already run a reverse proxy. `edge-agent serve` speaks plain HTTP on `127.0.0.1:8205`, and your proxy adds HTTPS. Replace `edge1.example.com` with the node's hostname.
 
 Whichever proxy you use, it must:
 
 - Keep the path and query string unchanged, because the signature covers them.
 - Pass `Range` requests through, and not cache or buffer the video.
 
-If you have no proxy, set `COMPOSE_PROFILES=caddy` in `.env` instead.
+If you have no proxy, uncomment the `caddy` block in `compose.edge.yml` instead.
 
 ## Caddy
 

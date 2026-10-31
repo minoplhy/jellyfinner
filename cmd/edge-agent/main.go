@@ -19,13 +19,17 @@ import (
 	"time"
 
 	"jellyfinner/internal/control"
+	"jellyfinner/internal/doctor"
 	"jellyfinner/internal/edgeagent"
+	"jellyfinner/internal/prepare"
 )
 
 const usage = `usage: edge-agent pull [--url URL] [--dir DIR] [--poll D] [--limit-mb N]
        edge-agent serve [--addr ADDR] [--dir DIR]
 
        edge-agent health pull | health serve [ADDR]
+       edge-agent doctor [--dir DIR]
+       edge-agent prepare --owner UID:GID PATH[:MODE]...
 
 pull reads NODE_TOKEN, and serve reads EDGE_SIGNING_KEY.
 `
@@ -47,6 +51,10 @@ func main() {
 		err = serve(ctx, os.Args[2:])
 	case "health":
 		err = health(os.Args[2:])
+	case "doctor":
+		err = runDoctor(ctx, os.Args[2:])
+	case "prepare":
+		err = prepare.Command(os.Args[2:])
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -55,6 +63,50 @@ func main() {
 		fmt.Fprintln(os.Stderr, "edge-agent:", err)
 		os.Exit(1)
 	}
+}
+
+// runDoctor checks whichever half of the node this container is. Each one holds
+// only its own secret, so that says which it is.
+func runDoctor(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	dir := fs.String("dir", "/edge", "directory files are stored in")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	r := doctor.New(os.Stdout)
+	key := os.Getenv("EDGE_SIGNING_KEY")
+	token := os.Getenv("NODE_TOKEN")
+	if key == "" && token == "" {
+		r.Check("settings", errors.New("neither NODE_TOKEN nor EDGE_SIGNING_KEY is set"))
+	}
+	if key != "" {
+		r.Check("files readable at "+*dir, doctor.Readable(*dir))
+	}
+	if token != "" {
+		r.Check("files writable at "+*dir, doctor.Writable(*dir))
+		r.Check("free space", doctor.FreeSpace(*dir, 5))
+		client, err := control.NewClient(os.Getenv("ORCHESTRATOR_URL"), token)
+		r.Check("orchestrator URL", err)
+		if err == nil {
+			checkNode(ctx, r, client)
+		}
+	}
+	return r.Done()
+}
+
+func checkNode(ctx context.Context, r *doctor.Report, client *control.Client) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	me, err := client.WhoAmI(ctx)
+	r.Check("orchestrator reachable and token accepted", err)
+	if err != nil {
+		return
+	}
+	if me.Kind != "edge" {
+		r.Check("node kind", fmt.Errorf("%s is a %s, add it with --edge", me.Name, me.Kind))
+		return
+	}
+	r.Note("this node is " + me.Name)
 }
 
 // health is for container health checks. The image has no shell or curl.
@@ -93,6 +145,7 @@ func pull(ctx context.Context, args []string) error {
 	if *limitMB < 0 {
 		return errors.New("--limit-mb cannot be negative")
 	}
+	prepare.Wait(prepare.WaitFor, *dir)
 	client, err := control.NewClient(*url, os.Getenv("NODE_TOKEN"))
 	if err != nil {
 		return err

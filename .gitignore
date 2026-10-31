@@ -7,5 +7,5 @@
 *.db-wal
 *.db.lock
 artifacts
-# Node data, from deploy/docker/init.sh.
+# Node data, from the compose files.
 deploy/docker/data/

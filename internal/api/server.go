@@ -4,7 +4,6 @@ package api
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
@@ -61,6 +60,7 @@ func New(cfg *config.Config, store *queue.Store, hooks Hooks, logger *log.Logger
 // Handler returns the routes behind authentication.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/whoami", s.whoami)
 	mux.HandleFunc("POST /v1/jobs/claim", s.workerOnly(s.claim))
 	mux.HandleFunc("POST /v1/jobs/{id}/heartbeat", s.workerOnly(s.heartbeat))
 	mux.HandleFunc("POST /v1/jobs/{id}/finish", s.workerOnly(s.finish))
@@ -85,7 +85,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		node := s.findNode(token)
+		node := s.store.NodeByToken(token)
 		if node == nil {
 			s.recordFailure(addr)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -107,16 +107,14 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	})
 }
 
-// findNode checks every token, so timing does not reveal which one matched.
-func (s *Server) findNode(token string) *config.Node {
-	var found *config.Node
-	for i := range s.cfg.Nodes {
-		n := &s.cfg.Nodes[i]
-		if subtle.ConstantTimeCompare([]byte(token), []byte(n.Token)) == 1 {
-			found = n
-		}
+// whoami lets a node test its token without changing anything, because claiming
+// a job to find out could take real work.
+func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
+	kind := queue.NodeWorker
+	if s.store.EdgeNode(nodeName(r)) != nil {
+		kind = queue.NodeEdge
 	}
-	return found
+	writeJSON(w, control.WhoAmIResponse{Name: nodeName(r), Kind: kind})
 }
 
 func (s *Server) markSeen(node string) {
@@ -136,7 +134,7 @@ func (s *Server) LastSeen() map[string]time.Time {
 	return out
 }
 
-func allowed(n *config.Node, addr netip.Addr) bool {
+func allowed(n *queue.Node, addr netip.Addr) bool {
 	if len(n.Allow) == 0 {
 		return true
 	}

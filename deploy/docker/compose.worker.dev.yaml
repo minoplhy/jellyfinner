@@ -1,31 +1,14 @@
-# Worker node. ./init.sh writes .env, so plain `docker compose up -d` works.
-# It encodes on the CPU. For a GPU, add compose.worker-gpu.yml to COMPOSE_FILE.
-name: jellyfinner-worker
+# Builds the worker from source. Needs the whole repository. Use it on top of the
+# normal file, from this folder:
+#   docker compose -f compose.worker.yml -f compose.worker.dev.yaml up -d --build
+x-build: &build
+  context: ../..
+  dockerfile: deploy/docker/Dockerfile.worker
 
 services:
+  worker-init:
+    build: *build
+    image: jellyfinner/worker:local
   worker:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.worker
-    image: ${JELLYFINNER_IMAGE_PREFIX:-jellyfinner}/worker:${JELLYFINNER_TAG:-local}
-    restart: unless-stopped
-    environment:
-      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:?set ORCHESTRATOR_URL in .env}
-      NODE_TOKEN: ${NODE_TOKEN:?set NODE_TOKEN in .env}
-    volumes:
-      - ${SCRATCH_HOST:-jellyfinner-scratch}:/scratch
-    read_only: true
-    tmpfs:
-      - /tmp
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    healthcheck:
-      test: ["CMD", "worker", "health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-
-volumes:
-  jellyfinner-scratch:
+    build: *build
+    image: jellyfinner/worker:local

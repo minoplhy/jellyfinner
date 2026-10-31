@@ -1,16 +1,52 @@
-# Worker node. ./init.sh writes .env, so plain `docker compose up -d` works.
-# It encodes on the CPU. For a GPU, add compose.worker-gpu.yml to COMPOSE_FILE.
+# Jellyfinner worker node. This file is the whole deployment: paste it into your
+# own compose file, fill in the values printed by this on the orchestrator node
+#   docker compose exec orchestrator orchestrator node add worker1
+# then run
+#   docker compose up -d
+# It needs no script, no .env and no other files. Check it with
+#   docker compose run --rm worker doctor
 name: jellyfinner-worker
 
+x-owner: &owner "10001:10001"
+
+x-image: &image ghcr.io/minoplhy/jellyfinner/worker:latest # Pin a version to keep nodes matched.
+
 services:
+  # Creates the scratch folder with the right owner, then exits, and the worker
+  # waits for it. There is no depends_on, because on Podman that stops a crashed
+  # service restarting.
+  worker-init:
+    image: *image
+    user: "0:0"
+    command: ["prepare", "--owner", *owner, "/scratch:750"]
+    volumes: &volumes
+      # Needs room for a source and its encode at once.
+      - ./data/scratch:/scratch
+      # For rclone transfers only. Holds rclone.conf and its SSH key.
+      # - ./rclone:/config:ro
+    cap_drop:
+      - ALL
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+
   worker:
-    image: ${JELLYFINNER_IMAGE_PREFIX:-ghcr.io/minoplhy/jellyfinner}/worker:${JELLYFINNER_TAG:-latest}
+    image: *image
+    user: *owner
     restart: unless-stopped
     environment:
-      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:?set ORCHESTRATOR_URL in .env}
-      NODE_TOKEN: ${NODE_TOKEN:?set NODE_TOKEN in .env}
-    volumes:
-      - ${SCRATCH_HOST:-./data/scratch}:/scratch
+      ORCHESTRATOR_URL: https://control.example.com # EDIT
+      NODE_TOKEN: replace-with-the-printed-token # EDIT
+      # To encode with a VAAPI GPU, uncomment these and the group_add below.
+      # ENCODER: vaapi
+      # VAAPI_DEVICE: /dev/dri/renderD128
+      # To compare rclone in the transfer speed test.
+      # TRANSFER: rclone
+    volumes: *volumes
+    # devices:
+    #   - /dev/dri/renderD128:/dev/dri/renderD128
+    # group_add:
+    #   - "989" # EDIT: the output of getent group render | cut -d: -f3
     read_only: true
     tmpfs:
       - /tmp
@@ -23,3 +59,10 @@ services:
       interval: 30s
       timeout: 10s
       start_period: 30s
+    # On the same machine as the orchestrator, uncomment this and the block at
+    # the end, and set ORCHESTRATOR_URL to http://orchestrator:8200.
+    # networks: [jellyfinner]
+
+# networks:
+#   jellyfinner:
+#     external: true

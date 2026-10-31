@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"jellyfinner/internal/config"
 	"jellyfinner/internal/edgerouter"
 	"jellyfinner/internal/pipeline"
 	"jellyfinner/internal/queue"
@@ -21,7 +20,7 @@ const (
 
 // Pin orders a node to cache a finished encode.
 func (s *Service) Pin(sourcePath, node string) error {
-	n := s.Cfg.EdgeNode(node)
+	n := s.Store.EdgeNode(node)
 	if n == nil {
 		return fmt.Errorf("unknown edge node %q", node)
 	}
@@ -49,7 +48,7 @@ func (s *Service) Pin(sourcePath, node string) error {
 	return s.Store.AddPlacement(&queue.Placement{Node: node, SHA256: src.EncodedSHA256, Output: output, Size: src.EncodedBytes})
 }
 
-func (s *Service) checkQuota(n *config.EdgeNode, size int64) error {
+func (s *Service) checkQuota(n *queue.Node, size int64) error {
 	used, err := s.Store.NodeUsed(n.Name)
 	if err != nil {
 		return err
@@ -126,7 +125,7 @@ func (s *Service) refreshPlacements(output string, video pipeline.File) error {
 	}
 	var errs []error
 	for node := range nodes {
-		n := s.Cfg.EdgeNode(node)
+		n := s.Store.EdgeNode(node)
 		if n == nil {
 			continue
 		}
@@ -141,7 +140,7 @@ func (s *Service) refreshPlacements(output string, video pipeline.File) error {
 
 func (s *Service) probeNodes(ctx context.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	for _, n := range s.Cfg.EdgeNodes {
+	for _, n := range s.Store.EdgeNodes() {
 		healthy := probe(ctx, client, n.URL+"/health")
 		if err := s.Store.SetNodeHealth(n.Name, healthy); err != nil {
 			s.Log.Printf("node health %s: %v", n.Name, err)
@@ -177,7 +176,7 @@ type NodeRow struct {
 // NodeRows summarises every edge node.
 func (s *Service) NodeRows() ([]NodeRow, error) {
 	var rows []NodeRow
-	for _, n := range s.Cfg.EdgeNodes {
+	for _, n := range s.Store.EdgeNodes() {
 		row := NodeRow{Name: n.Name, URL: n.URL, Quota: n.QuotaBytes}
 		var err error
 		if row.Used, err = s.Store.NodeUsed(n.Name); err != nil {

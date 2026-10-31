@@ -75,8 +75,10 @@ func newFixture(t *testing.T) *fixture {
 	}
 	cfg := &config.Config{
 		LibraryDir: "/lib", EdgeURLTTL: 24 * time.Hour,
-		EdgeNodes:   []config.EdgeNode{{Name: "edge1", URL: "https://edge1.example.com", SigningKey: sign}},
 		EdgeViewers: map[string]string{"alice": "edge1"},
+	}
+	if err := store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", SigningKey: sign}); err != nil {
+		t.Fatal(err)
 	}
 	f.router = NewRouter(cfg, store, f.jf, u, log.New(io.Discard, "", 0))
 	return f

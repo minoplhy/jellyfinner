@@ -1,3 +1,0 @@
-{$EDGE_HOSTNAME} {
-	reverse_proxy edge-serve:8205
-}

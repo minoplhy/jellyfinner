@@ -21,6 +21,7 @@ import (
 // streams of cached titles to the viewer's edge node. Keeping it apart from
 // serve means restarting the orchestrator leaves Jellyfin reachable.
 func router(envFile string) error {
+	waitForFolders(envFile)
 	cfg, err := config.Load(envFile)
 	if err != nil {
 		return err
@@ -39,6 +40,11 @@ func router(envFile string) error {
 	defer store.Close()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+	for user, node := range cfg.EdgeViewers {
+		if store.EdgeNode(node) == nil {
+			logger.Printf("EDGE_VIEWERS sends %s to %s, which is not an edge node yet, so they stay on the origin", user, node)
+		}
+	}
 	handler := edgerouter.NewRouter(cfg, store, jellyfin.New(cfg.JellyfinURL, cfg.JellyfinToken), upstream, logger)
 	// No write timeout: viewers fall back to long streams through this proxy.
 	server := &http.Server{Addr: cfg.RouterAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}

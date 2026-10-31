@@ -361,7 +361,7 @@ type dashboardData struct {
 func (s *Server) dashboardData() (dashboardData, error) {
 	data := dashboardData{Budget: s.svc.Cfg.BackfillDailyBytes}
 	seen := s.lastSeen()
-	for _, node := range s.svc.Cfg.Nodes {
+	for _, node := range s.svc.Store.Nodes() {
 		row := nodeRow{Name: node.Name, Seen: seen[node.Name]}
 		row.Online = !row.Seen.IsZero() && s.now().Sub(row.Seen) < 2*s.svc.Cfg.LeaseFor
 		data.Nodes = append(data.Nodes, row)
@@ -480,7 +480,7 @@ func (s *Server) libraryPage(w http.ResponseWriter, r *http.Request, sess *sessi
 		return
 	}
 	var nodes []string
-	for _, n := range s.svc.Cfg.EdgeNodes {
+	for _, n := range s.svc.Store.EdgeNodes() {
 		nodes = append(nodes, n.Name)
 	}
 	s.render(w, sess, "library", "Library", libraryData{CSRF: sess.csrf, Nodes: nodes, Search: search, Rows: rows, Total: total})

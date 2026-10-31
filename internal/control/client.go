@@ -252,6 +252,31 @@ func (c *Client) post(ctx context.Context, path string, body, out any) (int, err
 	return resp.StatusCode, nil
 }
 
+// WhoAmIResponse names the node a token belongs to.
+type WhoAmIResponse struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+// WhoAmI tests the connection and token, and changes nothing.
+func (c *Client) WhoAmI(ctx context.Context) (*WhoAmIResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/v1/whoami", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("control api /v1/whoami: %s", resp.Status)
+	}
+	var out WhoAmIResponse
+	return &out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
 // Claim asks for work. It returns nil when the queue is empty.
 func (c *Client) Claim(ctx context.Context) (*ClaimResponse, error) {
 	var resp ClaimResponse

@@ -83,6 +83,16 @@ CREATE TABLE IF NOT EXISTS edge_status (
 	disk_free  INTEGER NOT NULL DEFAULT 0,
 	disk_total INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS nodes (
+	name        TEXT PRIMARY KEY,
+	kind        TEXT NOT NULL,
+	token_hash  TEXT NOT NULL,
+	allow       TEXT NOT NULL DEFAULT '',
+	url         TEXT NOT NULL DEFAULT '',
+	quota_bytes INTEGER NOT NULL DEFAULT 0,
+	signing_key TEXT NOT NULL DEFAULT '',
+	created     INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS jobs_claim ON jobs (state, priority DESC, created);
 CREATE INDEX IF NOT EXISTS jobs_path ON jobs (path, state);
 `
@@ -96,6 +106,8 @@ type Store struct {
 	Now            func() time.Time
 	RetryDelay     time.Duration
 	BackfillBudget int64
+
+	nodes nodeCache
 }
 
 // Open creates or opens the database. A busy timeout lets the CLI run next to

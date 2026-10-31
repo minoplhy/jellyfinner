@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"jellyfinner/internal/config"
 	"jellyfinner/internal/queue"
 )
 
 func (f *fixture) edgeSetup(quota int64) {
-	f.cfg.EdgeNodes = []config.EdgeNode{{Name: "edge1", URL: "https://edge1.example.com", QuotaBytes: quota}}
+	if err := f.store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: quota}); err != nil {
+		panic(err)
+	}
 }
 
 func TestPinOnlyFinishedEncodes(t *testing.T) {

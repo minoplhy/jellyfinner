@@ -47,7 +47,6 @@ func TestParseRejects(t *testing.T) {
 		{"originals in library", "ORIGINALS_DIR", "/srv/library/x", "contain each other"},
 		{"bad duration", "STABLE_FOR", "soon", "STABLE_FOR"},
 		{"cert without key", "TLS_CERT", "/c.pem", "together"},
-		{"short token", "NODE_TOKENS", "worker1=short", "32 characters"},
 		{"zero attempts", "MAX_ATTEMPTS", "0", "at least 1"},
 	}
 	for _, tt := range tests {
@@ -78,36 +77,19 @@ func TestManualRequiresJellyfinAndWebhook(t *testing.T) {
 	}
 }
 
-func TestEdgeConfig(t *testing.T) {
-	key := strings.Repeat("k", 32)
+func TestEdgeViewers(t *testing.T) {
 	m := base()
-	m["NODE_TOKENS"] = "edge1=" + token
-	m["EDGE_NODES"] = "edge1=https://edge1.example.com,500," + key
-	m["EDGE_TOKEN_KEY"] = key
-	m["EDGE_VIEWERS"] = "alice=edge1"
+	m["EDGE_VIEWERS"] = "alice=edge1;bob=edge2"
 	c, err := parseMap(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := c.EdgeNode("edge1"); n == nil || n.QuotaBytes != 500e9 || c.EdgeViewers["alice"] != "edge1" {
-		t.Errorf("config = %+v", c)
+	if c.EdgeViewers["alice"] != "edge1" || c.EdgeViewers["bob"] != "edge2" {
+		t.Errorf("viewers = %+v", c.EdgeViewers)
 	}
-	for name, change := range map[string][2]string{
-		"plain http":     {"EDGE_NODES", "edge1=http://edge1.example.com,500," + key},
-		"zero quota":     {"EDGE_NODES", "edge1=https://edge1.example.com,0," + key},
-		"short key":      {"EDGE_NODES", "edge1=https://edge1.example.com,500,short"},
-		"no token":       {"NODE_TOKENS", "other=" + token},
-		"no token key":   {"EDGE_TOKEN_KEY", ""},
-		"unknown viewer": {"EDGE_VIEWERS", "alice=jp"},
-	} {
-		bad := map[string]string{}
-		for k, v := range m {
-			bad[k] = v
-		}
-		bad[change[0]] = change[1]
-		if _, err := parseMap(bad); err == nil {
-			t.Errorf("%s: want an error", name)
-		}
+	m["EDGE_VIEWERS"] = "alice"
+	if _, err := parseMap(m); err == nil {
+		t.Error("a viewer without a node must be refused")
 	}
 }
 
@@ -133,21 +115,6 @@ func TestCheckFilesystems(t *testing.T) {
 	}
 }
 
-func TestParseNodes(t *testing.T) {
-	nodes, err := ParseNodes("worker1=" + token + "@1.2.3.4/32+10.0.0.0/8; edge1=" + token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(nodes) != 2 || nodes[0].Name != "worker1" || len(nodes[0].Allow) != 2 || len(nodes[1].Allow) != 0 {
-		t.Errorf("nodes = %+v", nodes)
-	}
-	for _, bad := range []string{"worker1", "=" + token, "worker1=" + token + "@nonsense", "worker1=" + token + ";worker1=" + token} {
-		if _, err := ParseNodes(bad); err == nil {
-			t.Errorf("%q: want an error", bad)
-		}
-	}
-}
-
 func TestCheckControlURL(t *testing.T) {
 	for url, ok := range map[string]bool{
 		"https://control.example.com": true,
@@ -156,12 +123,38 @@ func TestCheckControlURL(t *testing.T) {
 		"http://[fd00::1]:8200":       true,
 		"http://8.8.8.8:8200":         false,
 		"http://control.example.com":  false,
+		"http://orchestrator:8200":    true,
+		"http://host.docker.internal": true,
+		"http://:8200":                false,
+		"http://internal.example.com": false,
 		"ftp://10.8.0.1":              false,
 		"10.8.0.1:8200":               false,
 	} {
 		if err := CheckControlURL(url); (err == nil) != ok {
 			t.Errorf("%s: err = %v, want ok=%v", url, err, ok)
 		}
+	}
+}
+
+func TestCheckListenAddr(t *testing.T) {
+	for addr, ok := range map[string]bool{
+		"127.0.0.1:8200": true,
+		"10.8.0.1:8200":  true,
+		"8.8.8.8:8200":   false,
+		"0.0.0.0:8200":   false,
+		"localhost:8200": false,
+		"8200":           false,
+	} {
+		if err := CheckListenAddr(addr); (err == nil) != ok {
+			t.Errorf("%s: err = %v, want ok=%v", addr, err, ok)
+		}
+	}
+	t.Setenv("JELLYFINNER_IN_CONTAINER", "1")
+	if err := CheckListenAddr("0.0.0.0:8200"); err != nil {
+		t.Errorf("in a container: %v", err)
+	}
+	if err := CheckListenAddr("8.8.8.8:8200"); err == nil {
+		t.Error("a public address stays refused in a container")
 	}
 }
 

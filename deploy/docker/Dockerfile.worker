@@ -25,6 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && install -d -o 10001 -g 10001 -m 750 /scratch
 COPY --from=build /out/worker /usr/local/bin/worker
 USER 10001:10001
-ENV RCLONE_CONFIG=/config/rclone.conf
-ENTRYPOINT ["worker", "serve", "--scratch", "/scratch", "--ffmpeg", "/usr/lib/jellyfin-ffmpeg/ffmpeg", "--ffprobe", "/usr/lib/jellyfin-ffmpeg/ffprobe"]
-CMD ["--backend", "software"]
+ENV RCLONE_CONFIG=/config/rclone.conf \
+    SCRATCH_DIR=/scratch \
+    FFMPEG=/usr/lib/jellyfin-ffmpeg/ffmpeg \
+    FFPROBE=/usr/lib/jellyfin-ffmpeg/ffprobe
+ENTRYPOINT ["worker"]
+CMD ["serve"]

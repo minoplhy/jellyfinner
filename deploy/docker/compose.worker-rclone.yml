@@ -1,9 +1,0 @@
-# Uses rclone instead of the control API, for the transfer speed test. The
-# orchestrator also needs REMOTE_ORIGINALS and REMOTE_INCOMING. In .env, use:
-#   COMPOSE_FILE=compose.worker.yml:compose.worker-rclone.yml
-services:
-  worker:
-    command: ["--transfer", "rclone", "--backend", "software"]
-    volumes:
-      # Holds rclone.conf and the SSH key it points to, readable by UID 10001.
-      - ${RCLONE_CONFIG_HOST:-./rclone}:/config:ro

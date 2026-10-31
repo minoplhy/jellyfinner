@@ -1,26 +1,44 @@
-# Edge node. ./init.sh writes .env, so plain `docker compose up -d` works.
+# Jellyfinner edge node. This file is the whole deployment: paste it into your
+# own compose file, fill in the values printed by this on the orchestrator node
+#   docker compose exec orchestrator orchestrator node add edge1 --edge --url https://edge1.example.com --quota-gb 500
+# then run
+#   docker compose up -d
+# It needs no script, no .env and no other files. Check each half with
+#   docker compose run --rm edge-pull doctor
+#   docker compose run --rm edge-serve doctor
 #
-# One image runs twice. pull writes files and only connects out. serve only
-# reads them, and answers viewers. Each gets only its own secret.
-#
-# TLS comes from any reverse proxy pointed at EDGE_BIND, which is
-# 127.0.0.1:8205 by default. See ../proxy/. If you have none, the caddy profile
-# in COMPOSE_PROFILES gives automatic HTTPS.
+# One image runs twice. edge-pull writes files and only connects out. edge-serve
+# only reads them, and answers viewers. Each gets only its own secret.
 name: jellyfinner-edge
 
-x-image: &image
-  image: ${JELLYFINNER_IMAGE_PREFIX:-ghcr.io/minoplhy/jellyfinner}/edge-agent:${JELLYFINNER_TAG:-latest}
+x-image: &image ghcr.io/minoplhy/jellyfinner/edge-agent:latest # Pin a version to keep nodes matched.
 
 services:
-  edge-pull:
-    <<: *image
-    restart: unless-stopped
-    command: ["pull", "--dir", "/edge", "--limit-mb", "${EDGE_LIMIT_MB:-20}"]
-    environment:
-      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:?set ORCHESTRATOR_URL in .env}
-      NODE_TOKEN: ${NODE_TOKEN:?set NODE_TOKEN in .env}
+  # Creates the file folder, then exits, and edge-pull waits for it. There is no
+  # depends_on, because on Podman that stops a crashed service restarting. Group
+  # 101 lets edge-serve read what edge-pull writes.
+  edge-init:
+    image: *image
+    user: "0:0"
+    command: ["prepare", "--owner", "10001:101", "/edge:2750"]
     volumes:
-      - ${EDGE_HOST:-./data/edge}:/edge
+      - ./data/edge:/edge
+    cap_drop:
+      - ALL
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+
+  edge-pull:
+    image: *image
+    restart: unless-stopped
+    # --limit-mb caps pull speed, so a pull leaves room for viewers.
+    command: ["pull", "--dir", "/edge", "--limit-mb", "20"]
+    environment:
+      ORCHESTRATOR_URL: https://control.example.com # EDIT
+      NODE_TOKEN: replace-with-the-printed-token # EDIT
+    volumes:
+      - ./data/edge:/edge
     read_only: true
     tmpfs:
       - /tmp
@@ -36,16 +54,17 @@ services:
       start_period: 30s
 
   edge-serve:
-    <<: *image
+    image: *image
     restart: unless-stopped
     user: "10002:101"
     command: ["serve", "--addr", "0.0.0.0:8205", "--dir", "/edge"]
     environment:
-      EDGE_SIGNING_KEY: ${EDGE_SIGNING_KEY:?set EDGE_SIGNING_KEY in .env}
+      EDGE_SIGNING_KEY: replace-with-the-printed-key # EDIT
     ports:
-      - "${EDGE_BIND:-127.0.0.1:8205}:8205"
+      # Point your reverse proxy here. It adds HTTPS. See deploy/proxy/README.md.
+      - 127.0.0.1:8205:8205
     volumes:
-      - ${EDGE_HOST:-./data/edge}:/edge:ro
+      - ./data/edge:/edge:ro
     read_only: true
     mem_limit: 64m
     cap_drop:
@@ -58,18 +77,17 @@ services:
       timeout: 10s
       start_period: 10s
 
-  caddy:
-    image: caddy:2-alpine
-    profiles: [caddy]
-    restart: unless-stopped
-    depends_on:
-      - edge-serve
-    environment:
-      EDGE_HOSTNAME: ${EDGE_HOSTNAME:-}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./caddy/edge.Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./data/caddy/data:/data
-      - ./data/caddy/config:/config
+  # Automatic HTTPS, if this node has no reverse proxy. It needs ports 80 and 443.
+  #
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - edge-serve
+  #   command: ["caddy", "reverse-proxy", "--from", "edge1.example.com", "--to", "edge-serve:8205"] # EDIT
+  #   ports:
+  #     - 80:80
+  #     - 443:443
+  #   volumes:
+  #     - ./data/caddy/data:/data
+  #     - ./data/caddy/config:/config

@@ -1,85 +1,14 @@
-# Orchestrator node. ./init.sh writes .env, so plain `docker compose up -d` works.
-#
-# Profiles, set in COMPOSE_PROFILES in .env:
-#   router    proxy in front of Jellyfin, for edge delivery
-#   caddy     automatic HTTPS, if you have no reverse proxy already
-#   jellyfin  run Jellyfin here, if it is not already running
-#
-# Host networking keeps real source addresses, and lets services reach each
-# other on 127.0.0.1. Bind addresses come from .env.
-name: jellyfinner-orchestrator
-
-x-app: &app
-  build:
-    context: ../..
-    dockerfile: deploy/docker/Dockerfile.orchestrator
-  image: ${JELLYFINNER_IMAGE_PREFIX:-jellyfinner}/orchestrator:${JELLYFINNER_TAG:-local}
-  restart: unless-stopped
-  network_mode: host
-  env_file: .env
-  environment:
-    DB_PATH: /var/lib/jellyfinner/state.db
-    ORIGINALS_DIR: /originals
-    # One mount holds both, because a rename cannot cross two mounts.
-    LIBRARY_DIR: /store/library
-    INCOMING_DIR: /store/incoming
-  volumes:
-    - ${ORIGINALS_HOST:-/srv/originals}:/originals:ro
-    - ${STORE_HOST:-/srv/store}:/store
-    - jellyfinner-state:/var/lib/jellyfinner
-  read_only: true
-  tmpfs:
-    - /tmp
-  cap_drop:
-    - ALL
-  security_opt:
-    - no-new-privileges:true
+# Builds the orchestrator from source. Needs the whole repository. Use it on top
+# of the normal file, from this folder:
+#   docker compose -f compose.orchestrator.yml -f compose.orchestrator.dev.yaml up -d --build
+x-build: &build
+  context: ../..
+  dockerfile: deploy/docker/Dockerfile.orchestrator
 
 services:
+  orchestrator-init:
+    build: *build
+    image: jellyfinner/orchestrator:local
   orchestrator:
-    <<: *app
-    healthcheck:
-      test: ["CMD", "orchestrator", "--env", "/nonexistent", "health", "serve"]
-      interval: 30s
-      timeout: 10s
-      start_period: 20s
-
-  # A separate process, so restarting the orchestrator leaves Jellyfin reachable.
-  router:
-    <<: *app
-    profiles: [router]
-    command: ["router"]
-    healthcheck:
-      test: ["CMD", "orchestrator", "--env", "/nonexistent", "health", "router"]
-      interval: 30s
-      timeout: 10s
-      start_period: 20s
-
-  caddy:
-    image: caddy:2-alpine
-    profiles: [caddy]
-    restart: unless-stopped
-    network_mode: host
-    env_file: .env
-    volumes:
-      - ./caddy/orchestrator.Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-
-  jellyfin:
-    image: jellyfin/jellyfin:latest
-    profiles: [jellyfin]
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - jellyfin-config:/config
-      - jellyfin-cache:/cache
-      - ${STORE_HOST:-/srv/store}/library:/media:ro
-
-volumes:
-  jellyfinner-state:
-    name: jellyfinner-state
-  caddy-data:
-  caddy-config:
-  jellyfin-config:
-  jellyfin-cache:
+    build: *build
+    image: jellyfinner/orchestrator:local

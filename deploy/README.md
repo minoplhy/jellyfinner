@@ -11,6 +11,7 @@ Roles can run on any machines. Follow `first-run.md` for the order and checks.
 3. Copy `.env.example` to `/etc/jellyfinner/orchestrator.env`, mode 600, and fill it in.
 4. Install the binary and `systemd/jellyfinner-orchestrator.service`.
 5. Apply `sysctl/90-jellyfinner.conf`, and set up WireGuard from `wireguard/` if used.
+6. Run `orchestrator doctor`, then add nodes with `orchestrator node add`, which prints each node's settings. It takes effect within seconds, with no restart.
 
 If `/srv/originals` differs, update `RequiresMountsFor`, `ReadOnlyPaths` and `ReadWritePaths` in the unit.
 
@@ -31,8 +32,8 @@ Read `edge-security.md` first. Files are stored by content hash, and only finish
 
 On the orchestrator node:
 
-1. Add `EDGE_NODES`, `EDGE_VIEWERS` and `EDGE_TOKEN_KEY`, and a `NODE_TOKENS` entry for each node.
-2. Install `systemd/jellyfinner-edge-router.service`, which runs `orchestrator router`, and point the public Jellyfin hostname at `ROUTER_ADDR`. Every Jellyfin request then passes through it.
+1. Add each node with `orchestrator node add edge1 --edge --url https://edge1.example.com --quota-gb 500`, and assign viewers in `EDGE_VIEWERS`.
+2. Install `systemd/jellyfinner-edge-router.service`, which runs `orchestrator router`, and point the public Jellyfin hostname at the router, which listens on `ROUTER_ADDR`. Every Jellyfin request then passes through it.
 3. Add the router's address to Jellyfin's known proxies, so viewers' real addresses are kept.
 
 On each node:
@@ -41,7 +42,8 @@ On each node:
 2. Create users `edge-agent` and `edge-serve`, and a group `nginx`, or the group of your choice if you edit the units. `/edge` is owned by `edge-agent:nginx`, mode 2750, so `edge-serve` can read and only the agent can write.
 3. Copy `edge-agent.env.example` to `/etc/jellyfinner/edge-agent.env`, and `edge-serve.env.example` to `/etc/jellyfinner/edge-serve.env`, both mode 600.
 4. Install both services: `systemd/jellyfinner-edge-agent.service` and `jellyfinner-edge-serve.service`, or the `openrc/` scripts on Alpine.
-5. Point any reverse proxy at `127.0.0.1:8205`. See `proxy/README.md`. Instead of `edge-serve`, nginx can check signatures itself with `nginx/edge.conf`.
+5. Run `edge-agent doctor` as each user, with that service's settings.
+6. Point any reverse proxy at `127.0.0.1:8205`. See `proxy/README.md`. Instead of `edge-serve`, nginx can check signatures itself with `nginx/edge.conf`.
 
 Then cache a title with the Library page or `orchestrator edge pin SOURCE --node edge1`.
 

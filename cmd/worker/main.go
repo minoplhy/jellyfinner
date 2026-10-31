@@ -19,11 +19,12 @@ import (
 	"jellyfinner/internal/control"
 	"jellyfinner/internal/encode"
 	"jellyfinner/internal/pipeline"
+	"jellyfinner/internal/prepare"
 	"jellyfinner/internal/transfer"
 )
 
 const (
-	usage          = "usage: worker serve --url URL --scratch DIR [--transfer https|rclone] [--backend software|vaapi] [--device PATH]\n\nThe control token is read from NODE_TOKEN.\n"
+	usage          = "usage: worker serve --url URL --scratch DIR [--transfer https|rclone] [--backend software|vaapi] [--device PATH]\n       worker doctor\n       worker health\n       worker prepare --owner UID:GID PATH[:MODE]...\n\nThe control token is read from NODE_TOKEN. Settings can also come from ORCHESTRATOR_URL, SCRATCH_DIR, TRANSFER, ENCODER, VAAPI_DEVICE, FFMPEG and FFPROBE.\n"
 	logTailBytes   = 256 << 10
 	finishAttempts = 5
 	healthMaxAge   = 3 * time.Minute
@@ -50,6 +51,19 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) >= 2 && (os.Args[1] == "doctor" || os.Args[1] == "prepare") {
+		var err error
+		if os.Args[1] == "doctor" {
+			err = runDoctor(os.Args[2:])
+		} else {
+			err = prepare.Command(os.Args[2:])
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "worker:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -62,16 +76,36 @@ func main() {
 	}
 }
 
+// settings are the flags serve and doctor share. Each falls back to the
+// environment, so a compose file needs no command line.
+type settings struct {
+	url, scratch, backend, device, ffmpeg, ffprobe, method, rclone *string
+}
+
+func flags(fs *flag.FlagSet) settings {
+	return settings{
+		url:     fs.String("url", os.Getenv("ORCHESTRATOR_URL"), "orchestrator control URL"),
+		scratch: fs.String("scratch", os.Getenv("SCRATCH_DIR"), "scratch directory on fast local disk"),
+		backend: fs.String("backend", envOr("ENCODER", string(encode.BackendSoftware)), "software or vaapi"),
+		device:  fs.String("device", os.Getenv("VAAPI_DEVICE"), "VAAPI render node"),
+		ffmpeg:  fs.String("ffmpeg", envOr("FFMPEG", "ffmpeg"), "ffmpeg binary, ideally jellyfin-ffmpeg"),
+		ffprobe: fs.String("ffprobe", envOr("FFPROBE", "ffprobe"), "ffprobe binary"),
+		method:  fs.String("transfer", envOr("TRANSFER", "https"), "https uses the control API, rclone uses REMOTE_ORIGINALS and REMOTE_INCOMING"),
+		rclone:  fs.String("rclone", "rclone", "rclone binary"),
+	}
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func serve(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	url := fs.String("url", os.Getenv("ORCHESTRATOR_URL"), "orchestrator control URL")
-	scratch := fs.String("scratch", "", "scratch directory on fast local disk")
-	backend := fs.String("backend", string(encode.BackendSoftware), "software or vaapi")
-	device := fs.String("device", "", "VAAPI render node")
-	ffmpeg := fs.String("ffmpeg", "ffmpeg", "ffmpeg binary, ideally jellyfin-ffmpeg")
-	ffprobe := fs.String("ffprobe", "ffprobe", "ffprobe binary")
-	method := fs.String("transfer", "https", "https uses the control API, rclone uses REMOTE_ORIGINALS and REMOTE_INCOMING")
-	rclone := fs.String("rclone", "rclone", "rclone binary")
+	set := flags(fs)
+	url, scratch, backend, device, ffmpeg, ffprobe, method, rclone := set.url, set.scratch, set.backend, set.device, set.ffmpeg, set.ffprobe, set.method, set.rclone
 	streams := fs.Int("streams", 8, "parallel streams per file")
 	poll := fs.Duration("poll", 10*time.Second, "how often to ask for work")
 	heartbeat := fs.Duration("heartbeat", 15*time.Second, "how often to renew a lease")
@@ -87,6 +121,7 @@ func serve(ctx context.Context, args []string) error {
 	if *method != "https" && *method != "rclone" {
 		return fmt.Errorf("unknown transfer %q", *method)
 	}
+	prepare.Wait(prepare.WaitFor, *scratch)
 	if err := os.MkdirAll(*scratch, 0o750); err != nil {
 		return err
 	}

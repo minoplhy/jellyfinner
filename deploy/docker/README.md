@@ -2,142 +2,161 @@
 
 For operators deploying with Docker Compose, which is the main way to run Jellyfinner. For a full first deployment with a check at every stage, follow [../first-run.md](../first-run.md).
 
-There are three roles. Any role can run on any machine in any region, and several can share one machine. Give each role on a machine its own copy of this folder, because each copy has its own `.env`.
+Each role is one self-contained compose file. Any role can run on any machine in any region, and several can share one machine.
 
 | Role | Runs | Compose file |
 |---|---|---|
-| Orchestrator node | Orchestrator, control API, admin UI, optional router, Caddy and Jellyfin | `compose.orchestrator.yml` |
-| Worker node | Encoder | `compose.worker.yml` |
-| Edge node | File server and pull agent | `compose.edge.yml` |
+| Orchestrator node | Orchestrator, control API, admin UI. Optional router, Caddy and Jellyfin | [compose.orchestrator.yml](compose.orchestrator.yml) |
+| Worker node | Encoder | [compose.worker.yml](compose.worker.yml) |
+| Edge node | File server and pull agent | [compose.edge.yml](compose.edge.yml) |
 
-## Images
+Use a file as it is, or paste its services into your own `docker-compose.yaml`, Portainer stack or similar. It needs no script, no `.env`, and no other file. Values you must change are marked `EDIT`. If you prefer a `.env`, replace any value with `${VAR}` as usual.
 
-Compose pulls prebuilt `linux/amd64` images from GitHub Container Registry, so nodes build nothing and need only this folder. Every push to the default branch and every `v*` tag publishes new images, through `.github/workflows/images.yml`.
+**Keep a filled-in file private and out of git,** because it holds node secrets.
 
-To update a node:
+## Setup
+
+### Orchestrator node
+
+Paste `compose.orchestrator.yml`, edit the marked values, then start it and check it:
+
+```sh
+docker compose up -d
+docker compose run --rm orchestrator doctor
+```
+
+It starts with no nodes. Point your reverse proxy at its ports, or uncomment the `caddy` block.
+
+### Add a worker
+
+On the orchestrator node:
+
+```sh
+docker compose exec orchestrator orchestrator node add worker1
+```
+
+It prints `ORCHESTRATOR_URL` and `NODE_TOKEN`. Paste `compose.worker.yml` on the worker, fill those in, then:
+
+```sh
+docker compose up -d
+docker compose run --rm worker doctor
+```
+
+The token is shown once, and the database keeps only its hash. If you lose it, run `node rotate worker1`.
+
+### Add an edge node
+
+```sh
+docker compose exec orchestrator orchestrator node add edge1 --edge --url https://edge1.example.com --quota-gb 500
+```
+
+It prints two blocks, so `edge-pull` gets only the token and `edge-serve` gets only the signing key. Keep them apart. Read [../edge-security.md](../edge-security.md) before enrolling a real node.
+
+```sh
+docker compose up -d
+docker compose run --rm edge-pull doctor
+docker compose run --rm edge-serve doctor
+```
+
+### Manage nodes
+
+Changes reach running services within about 10 seconds, with no restart.
+
+```sh
+docker compose exec orchestrator orchestrator node list
+docker compose exec orchestrator orchestrator node rotate worker1
+docker compose exec orchestrator orchestrator node remove worker1
+```
+
+`node remove` revokes the node and forgets what it cached. Files stay on an edge node's disk until you delete them.
+
+To limit a node to known addresses, add it with `--allow 203.0.113.7/32`.
+
+## Folders and ownership
+
+All data lives in plain folders, not Docker volumes. A short-lived `*-init` service creates them with the right owner, then exits, so no `sudo` or host command is needed. It changes only the folders themselves, never what is inside them, and never your originals.
+
+| Role | Folder in the container | Holds |
+|---|---|---|
+| Orchestrator | `/var/lib/jellyfinner` | The database, including node secrets. Back this up and keep it private |
+| Orchestrator | `/store/library`, `/store/incoming` | Published encodes and uploads in progress |
+| Worker | `/scratch` | Sources and encodes in progress |
+| Edge | `/edge` | Cached files |
+
+Library and incoming must sit under one mount, because a rename cannot cross two mounts. The orchestrator refuses to start if it would fail.
+
+Do not add `depends_on` from a service to its `*-init` service. On Podman, that stops a crashed service restarting. Services wait up to 30 seconds for their folders instead.
+
+**If your media belongs to another user,** set `x-owner` at the top of the file to that `UID:GID`. It sets both the services' user and the folders' owner.
+
+**On rootless Docker or Podman,** files you own appear to container UID 10001 as someone else's. World-readable originals work as they are. For private ones, set `x-owner` to `"0:0"`, which is your own host user there and not real root.
+
+**On a network share** where `chown` is refused, set the owner on the server. `*-init` changes nothing that is already right.
+
+## Networking
+
+Everything runs on a normal bridge network named `jellyfinner`, and ports are published on `127.0.0.1` only, for a reverse proxy on the same machine.
+
+| Port | Purpose |
+|---|---|
+| `8200` | Control API, for workers and edge nodes |
+| `8202` | Admin UI |
+| `8204` | Router, if enabled |
+| `8205` | `edge-serve`, on an edge node |
+
+Nodes need no open ports, except an edge node's HTTPS. They use HTTPS, or plain HTTP inside a private network: a private address, a one-word container name such as `orchestrator`, or a `.internal` name.
+
+**Jellyfin on the host** is reached at `http://host.docker.internal:8096`, so it must listen on more than `127.0.0.1`. **Jellyfin in the same file** is `http://jellyfin:8096`.
+
+**A worker on the orchestrator's machine** joins the network: uncomment `networks` in `compose.worker.yml`, and use `http://orchestrator:8200`.
+
+**A reverse proxy in another compose project** joins by network instead of by port. Add its network to the end of the file with `external: true`, list it under the service's `networks`, then proxy to `orchestrator:8200`.
+
+### Reverse proxies
+
+Nothing requires a particular proxy. On an edge node, see [../proxy/README.md](../proxy/README.md). On the orchestrator node, send the viewer hostname to Jellyfin, or to the router once it is proven, and the control hostname to port `8200`.
+
+The image trusts `X-Forwarded-For` from private addresses, so allowlists and failed-login limits see real clients behind a proxy. This is safe while ports stay on `127.0.0.1`. **If you publish the control API on a public address, set `TRUSTED_PROXIES` to your proxy's address, or to an empty value.** Otherwise, on a runtime that hides client addresses, an outsider could forge the header to get around those limits.
+
+## Optional parts
+
+Uncomment these blocks in the file.
+
+| Block | Where | Gives you |
+|---|---|---|
+| `caddy` | Orchestrator, edge | Automatic HTTPS, if you have no reverse proxy. It needs ports 80 and 443 |
+| `router` | Orchestrator | Redirects cached titles to edge nodes. Needs `JELLYFIN_TOKEN` |
+| `jellyfin` | Orchestrator | Runs Jellyfin, if you do not have one already |
+| `ENCODER`, `devices`, `group_add` | Worker | Encodes with a VAAPI GPU |
+| `TRANSFER`, the `rclone` volume | Worker | Transfers with rclone over SFTP, for the speed test in [../first-run.md](../first-run.md) |
+
+## Images and updates
+
+Compose pulls prebuilt `linux/amd64` images from GitHub Container Registry, so nodes build nothing. Every push to the default branch and every `v*` tag publishes new images.
 
 ```sh
 docker compose pull
 docker compose up -d
 ```
 
-`latest` changes with every push, so nodes updated at different times can run different versions. To keep every node on one version, set the same tag in each node's `.env`, using a version such as `1.2.3` or a short commit tag such as `sha-c4f5714`:
+`latest` changes with every push, so nodes updated at different times can run different versions. To keep every node matched, use the same tag in each file's `image:` lines, such as `1.2.3` or `sha-c4f5714`.
+
+To build from source, use the matching `.dev.yaml` on top, which needs the whole repository:
 
 ```sh
-JELLYFINNER_TAG=1.2.3
+docker compose -f compose.worker.yml -f compose.worker.dev.yaml up -d --build
 ```
 
-To build from source instead, use the matching `.dev.yaml` file, which needs the whole repository rather than this folder:
-
-| Role | Compose file |
-|---|---|
-| Orchestrator node | `compose.orchestrator.dev.yaml` |
-| Worker node | `compose.worker.dev.yaml` |
-| Edge node | `compose.edge.dev.yaml` |
-
-Point `COMPOSE_FILE` in `.env` at it, then build:
+## Everyday commands
 
 ```sh
-COMPOSE_FILE=compose.worker.dev.yaml
-docker compose up -d --build
-```
-
-The GPU and rclone override files work the same way, for example `COMPOSE_FILE=compose.worker.dev.yaml:compose.worker-gpu.yml`.
-
-To avoid building on a small server, build on any capable machine and move the image across:
-
-```sh
-docker compose -f compose.worker.dev.yaml build
-docker save jellyfinner/worker:local | ssh worker-host docker load
-```
-
-Then set `JELLYFINNER_IMAGE_PREFIX=jellyfinner` and `JELLYFINNER_TAG=local` in that node's `.env`, so `compose.worker.yml` uses the loaded image.
-
-## Setup
-
-`init.sh` writes `.env`, including generated secrets, and never overwrites an existing one. It also sets `COMPOSE_FILE`, so `docker compose up -d` needs no flags.
-
-On the orchestrator node:
-
-```sh
-./init.sh orchestrator tv.example.com control.example.com
-./init.sh add-worker worker1
-./init.sh add-edge edge1 https://edge1.example.com 500
-```
-
-Set `JELLYFIN_TOKEN`, `ORIGINALS_HOST` and `STORE_HOST` in `.env`, then create the data folders and start:
-
-```sh
-sudo ./init.sh dirs
-docker compose up -d
-```
-
-All data lives in plain folders, not Docker volumes. Run `sudo ./init.sh dirs` on every node, because our containers run as UID 10001 and Docker would create a missing folder as root.
-
-| Role | Setting in `.env` | Default | Holds |
-|---|---|---|---|
-| Orchestrator | `STATE_HOST` | `./data/state` | The database, which is the part to back up |
-| Worker | `SCRATCH_HOST` | `./data/scratch` | Sources and encodes in progress |
-| Edge | `EDGE_HOST` | `./data/edge` | Cached files |
-
-The Caddy and Jellyfin profiles keep their data under `./data/` too. The `.dev.yaml` files still use Docker volumes.
-
-Library and incoming must sit under one mount, because a rename cannot cross two mounts. The orchestrator refuses to start if it would fail.
-
-The `add-worker` and `add-edge` commands each print one command. Run it on that node, then start it:
-
-```sh
-./init.sh worker https://control.example.com GENERATED_TOKEN
-sudo ./init.sh dirs
-docker compose up -d
-```
-
-Run `docker compose up -d` on the orchestrator after adding nodes, so it reads the new tokens.
-
-Run CLI commands through the container:
-
-```sh
-docker compose exec orchestrator orchestrator --env /nonexistent queue list
-```
-
-## Optional parts
-
-Set these in `COMPOSE_PROFILES` in `.env`, separated by commas.
-
-| Profile | Where | Gives you |
-|---|---|---|
-| `caddy` | Orchestrator, edge | Automatic HTTPS, if you have no reverse proxy. It needs ports 80 and 443 |
-| `router` | Orchestrator | Redirects cached titles to edge nodes |
-| `jellyfin` | Orchestrator | Runs Jellyfin, if you do not have one already |
-
-## Your own reverse proxy
-
-Nothing requires a particular proxy. On an edge node, point yours at `EDGE_BIND`. See [../proxy/README.md](../proxy/README.md).
-
-On the orchestrator node, send the viewer hostname to Jellyfin, or to `ROUTER_ADDR` once the router is proven, and the control hostname to `CONTROL_ADDR`. List the proxy's address in `TRUSTED_PROXIES`, so IP allowlists and failed-login limits see real clients. Do not expose `CONTROL_ADDR` directly while `TRUSTED_PROXIES` is set for an address outsiders can reach.
-
-## Worker options
-
-Add these with `COMPOSE_FILE` in `.env`, separated by a colon:
-
-```
-COMPOSE_FILE=compose.worker.yml:compose.worker-gpu.yml
-```
-
-| File | Purpose |
-|---|---|
-| `compose.worker-gpu.yml` | Encodes with a VAAPI GPU. It needs `RENDER_GID`, from `getent group render \| cut -d: -f3` |
-| `compose.worker-rclone.yml` | Transfers with rclone over SFTP, for the speed test in [../first-run.md](../first-run.md) |
-
-## Status and logs
-
-```sh
+docker compose exec orchestrator orchestrator queue list
 docker compose ps
 docker compose logs -f
 ```
 
-Every service except Caddy and Jellyfin has a health check. The orchestrator and router check their port, `edge-serve` checks its `/health`, and the worker and pull agent report unhealthy if they have not reached the orchestrator for three minutes.
+`doctor` runs in its own short-lived container, so it works while a service is crash-looping, and sees the same mounts, user and network. Fix whatever it reports as `FAIL`. Every service except Caddy and Jellyfin also has a health check. The worker and pull agent report unhealthy if they have not reached the orchestrator for three minutes.
 
 ## Security settings
 
-Our services run as non-root users, on a read-only root filesystem, with all capabilities dropped. On an edge node, the pull agent holds only the node token and can write files. The file server holds only the signing key and reads files, with a 64 MB memory limit against the agent's 128 MB. Read [../edge-security.md](../edge-security.md) before enrolling a real node.
+Our services run as non-root users, on a read-only root filesystem, with all capabilities dropped. Only the `*-init` services run as root, with the few capabilities needed to set ownership, and they exit at once. On an edge node, the pull agent holds only the node token and can write files. The file server holds only the signing key and reads files, with a 64 MB memory limit against the agent's 128 MB.

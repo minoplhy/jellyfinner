@@ -31,7 +31,9 @@ The node runs one binary as two processes. `edge-agent pull` connects out, can w
 ## Accepted risks
 
 - **Node compromise** exposes the encoded files on that node, and lets the attacker mint URLs for that node. It does not reach Jellyfin, viewers' tokens, originals or other nodes.
-- **Stolen agent token** gives access to that node's orders and the files ordered to it. Use a source IP allowlist in `NODE_TOKENS`, and remove the entry to revoke it.
+- **Stolen agent token** gives access to that node's orders and the files ordered to it. Add a source IP allowlist with `node add --allow`. `node remove` or `node rotate` revokes it within seconds.
+- **The orchestrator's database holds each node's signing key in the clear,** because it must sign URLs, along with the edge token key. Node tokens are stored only as hashes. Keep the state folder private, and treat backups of it as secrets.
+- **Node secrets can sit in a compose file,** which is the cost of a one-file deployment. Keep that file private and out of git, or use `${VAR}` references to your own secret store.
 - **Orchestrator compromise** can make a node download from it or delete cached files. It gets no shell on the node, and the loss is a cache.
 - **Signed URLs use MD5,** the only option in nginx's `secure_link`, kept so nginx stays usable. A long random per-node key is required.
 - **Jellyfin serves direct streams without a token.** On Jellyfin 12.4, a stream URL for a known item ID worked with no token at all. This is Jellyfin's behaviour, not added by Jellyfinner. Item IDs are hard to guess, but treat them as access to that title.
