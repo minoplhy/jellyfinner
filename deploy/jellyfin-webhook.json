@@ -1,0 +1,6 @@
+{
+  "NotificationType": "{{NotificationType}}",
+  "ItemId": "{{ItemId}}",
+  "UserId": "{{UserId}}",
+  "NotificationUsername": "{{NotificationUsername}}"
+}

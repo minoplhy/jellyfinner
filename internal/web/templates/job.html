@@ -1,0 +1,23 @@
+{{define "content"}}
+{{with .Content}}
+<h1>{{.Path}}</h1>
+<div class="panel">
+  <table>
+    <tr><th>Job</th><td>{{.ID}}</td></tr>
+    <tr><th>State</th><td class="state-{{.State}}">{{.State}}</td></tr>
+    <tr><th>Attempts</th><td>{{.Attempts}}</td></tr>
+    <tr><th>Node</th><td>{{.Node}}</td></tr>
+    <tr><th>Output</th><td class="path">{{.OutputPath}}</td></tr>
+    <tr><th>Source size</th><td>{{size .SourceSize}}</td></tr>
+    <tr><th>Revision</th><td>{{.Revision}}</td></tr>
+    {{if .Reason}}<tr><th>Reason</th><td>{{.Reason}}</td></tr>{{end}}
+    {{if .ForceEncode}}<tr><th>Option</th><td>Force encode</td></tr>{{end}}
+    {{if .Software}}<tr><th>Option</th><td>Software encoder</td></tr>{{end}}
+    {{if .Error}}<tr><th>Error</th><td class="error">{{.Error}}</td></tr>{{end}}
+    <tr><th>Updated</th><td>{{ago .Updated}}</td></tr>
+  </table>
+</div>
+<h2>Log</h2>
+<div class="panel"><pre>{{if .Log}}{{.Log}}{{else}}No log yet.{{end}}</pre></div>
+{{end}}
+{{end}}

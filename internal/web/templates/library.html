@@ -1,0 +1,35 @@
+{{define "content"}}
+{{with .Content}}
+<h1>Library</h1>
+<form class="toolbar" method="get" action="/library">
+  <input type="search" name="q" value="{{.Search}}" placeholder="Search titles or paths">
+  <button>Search</button>
+</form>
+<form method="post">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <div class="toolbar">
+    <button class="primary" formaction="/library/add">Add to queue</button>
+    <button formaction="/library/reencode">Re-encode</button>
+    {{if .Nodes}}
+    <select name="node" aria-label="Edge node">{{range .Nodes}}<option>{{.}}</option>{{end}}</select>
+    <button formaction="/library/cache">Cache to node</button>
+    {{end}}
+    <span class="muted">{{len .Rows}} of {{.Total}} titles shown</span>
+  </div>
+  <div class="panel">
+    <table>
+      <tr><th></th><th>Title</th><th>State</th><th>Size</th><th>Job</th></tr>
+      {{range .Rows}}
+      <tr>
+        <td><input type="checkbox" name="path" value="{{.Path}}" aria-label="Select {{.Title}}"></td>
+        <td class="path">{{.Path}}</td>
+        <td class="state-{{.State}}">{{.State}}</td>
+        <td>{{size .Size}}</td>
+        <td>{{with .Job}}<a href="/jobs/{{.ID}}">{{.State}}</a>{{end}}</td>
+      </tr>
+      {{else}}<tr><td class="muted" colspan="5">No titles found.</td></tr>{{end}}
+    </table>
+  </div>
+</form>
+{{end}}
+{{end}}

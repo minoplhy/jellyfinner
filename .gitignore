@@ -1,0 +1,9 @@
+# Filled-in settings hold tokens and keys.
+.env
+*.env
+!*.env.example
+*.db
+*.db-shm
+*.db-wal
+*.db.lock
+artifacts

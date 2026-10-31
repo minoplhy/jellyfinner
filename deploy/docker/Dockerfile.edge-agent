@@ -1,0 +1,22 @@
+# Edge node. A static binary on an empty image, with no shell. The same image
+# runs both `pull` and `serve`. Build from the repository root. /edge is group
+# 101, shared by serve and by the official nginx image's user, so either can
+# read what pull writes.
+FROM golang:1.27-bookworm AS build
+# One compile job, so builds fit on small machines.
+ENV GOFLAGS=-p=1
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd cmd
+COPY internal internal
+RUN CGO_ENABLED=0 go build -o /out/edge-agent ./cmd/edge-agent \
+    && install -d -m 2750 /out/edge
+
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /out/edge-agent /edge-agent
+COPY --from=build --chown=10001:101 /out/edge /edge
+USER 10001:101
+ENTRYPOINT ["/edge-agent"]
+CMD ["pull", "--dir", "/edge", "--limit-mb", "20"]

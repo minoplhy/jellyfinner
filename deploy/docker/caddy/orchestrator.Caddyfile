@@ -1,0 +1,12 @@
+# Viewers. PUBLIC_UPSTREAM points at Jellyfin until the router is proven, then
+# at the router.
+{$PUBLIC_HOSTNAME} {
+	reverse_proxy {$PUBLIC_UPSTREAM}
+}
+
+# Workers and edge nodes. flush_interval keeps large transfers streaming.
+{$CONTROL_HOSTNAME} {
+	reverse_proxy {$CONTROL_ADDR} {
+		flush_interval -1
+	}
+}

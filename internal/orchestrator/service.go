@@ -1,0 +1,506 @@
+// Package orchestrator runs the central side: it turns watched files into jobs,
+// reaps dead workers, and publishes finished encodes.
+package orchestrator
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"jellyfinner/internal/config"
+	"jellyfinner/internal/job"
+	"jellyfinner/internal/notify"
+	"jellyfinner/internal/queue"
+	"jellyfinner/internal/stub"
+	"jellyfinner/internal/watch"
+)
+
+// massDeleteMin stops the percentage check tripping on small libraries.
+const massDeleteMin = 5
+
+const reapInterval = 15 * time.Second
+
+// MediaServer is what the orchestrator needs from Jellyfin.
+type MediaServer interface {
+	Refresh(ctx context.Context) error
+	ItemPath(ctx context.Context, itemID string) (string, error)
+	ClearPlayed(ctx context.Context, itemID, userID string) error
+	SendMessage(ctx context.Context, sessionID, header, text string) error
+}
+
+// StubName is the master stub inside INCOMING_DIR, which shares a filesystem
+// with the library but is not one.
+const StubName = ".stub.mp4"
+
+// Service holds the orchestrator's background work.
+type Service struct {
+	Cfg     *config.Config
+	Store   *queue.Store
+	Notify  notify.Notifier
+	Library MediaServer // nil when no Jellyfin URL is set
+	Stub    stub.Master
+	Log     *log.Logger
+	Profile string
+
+	publishNow chan struct{}
+	scanNow    chan struct{}
+
+	mu           sync.Mutex
+	refreshTimer *time.Timer
+	scanFailing  bool
+	deletePaused bool
+}
+
+// New returns a Service. The profile hash goes into every job ID, so changing
+// the output profile produces new jobs rather than matching old ones.
+func New(cfg *config.Config, store *queue.Store, n notify.Notifier, library MediaServer, logger *log.Logger) *Service {
+	return &Service{
+		Cfg:        cfg,
+		Store:      store,
+		Notify:     n,
+		Library:    library,
+		Log:        logger,
+		Profile:    cfg.Output.Hash(),
+		Stub:       stub.Master(filepath.Join(cfg.IncomingDir, StubName)),
+		publishNow: make(chan struct{}, 1),
+		scanNow:    make(chan struct{}, 1),
+	}
+}
+
+// Run blocks until ctx ends.
+func (s *Service) Run(ctx context.Context) {
+	scan := time.NewTicker(s.Cfg.ScanInterval)
+	defer scan.Stop()
+	reap := time.NewTicker(reapInterval)
+	defer reap.Stop()
+	probe := time.NewTicker(probeInterval)
+	defer probe.Stop()
+	defer s.stopRefreshTimer()
+
+	s.TriggerScan()
+	s.TriggerPublish()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-scan.C:
+			s.runScan(ctx)
+		case <-s.scanNow:
+			s.runScan(ctx)
+		case <-reap.C:
+			s.reap(ctx)
+		case <-probe.C:
+			s.probeNodes(ctx)
+		case <-s.publishNow:
+			s.PublishPending(ctx)
+		}
+	}
+}
+
+// TriggerScan requests a scan without waiting. It is the fast path for
+// anything that knows a file arrived; the timed scan remains the source of truth.
+func (s *Service) TriggerScan() {
+	select {
+	case s.scanNow <- struct{}{}:
+	default:
+	}
+}
+
+// TriggerPublish requests a publish pass without waiting.
+func (s *Service) TriggerPublish() {
+	select {
+	case s.publishNow <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Service) send(ctx context.Context, message string) {
+	s.Log.Print(message)
+	if err := s.Notify.Send(ctx, message); err != nil {
+		s.Log.Printf("notify: %v", err)
+	}
+}
+
+func (s *Service) reap(ctx context.Context) {
+	failed, err := s.Store.ExpireLeases(s.Cfg.MaxAttempts)
+	if err != nil {
+		s.Log.Printf("expire leases: %v", err)
+		return
+	}
+	for _, j := range failed {
+		s.JobFailed(ctx, j)
+	}
+}
+
+// JobFailed reports a job that has run out of attempts.
+func (s *Service) JobFailed(ctx context.Context, j *queue.Job) {
+	s.send(ctx, fmt.Sprintf("Encode failed: %s (job %s, %d attempts). Last error: %s",
+		Title(j.Path), j.ID, j.Attempts, j.Error))
+}
+
+func (s *Service) runScan(ctx context.Context) {
+	err := s.ScanOnce(ctx)
+	s.mu.Lock()
+	wasFailing := s.scanFailing
+	s.scanFailing = err != nil
+	s.mu.Unlock()
+	switch {
+	case err != nil && !wasFailing:
+		s.send(ctx, fmt.Sprintf("Originals scan failing, no changes applied: %v", err))
+	case err != nil:
+		s.Log.Printf("scan: %v", err)
+	case wasFailing:
+		s.send(ctx, "Originals scan recovered.")
+	}
+}
+
+// ScanOnce applies one scan to the database and queues anything ready.
+func (s *Service) ScanOnce(ctx context.Context) error {
+	files, err := watch.Scan(s.Cfg.OriginalsDir)
+	if err != nil {
+		return err
+	}
+	tracked, err := s.Store.Sources()
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 && len(tracked) > 0 {
+		return fmt.Errorf("%s looks empty but %d sources are tracked, is the disk mounted?", s.Cfg.OriginalsDir, len(tracked))
+	}
+
+	// Files found by the very first scan are the existing library, not new
+	// arrivals. They wait as backlog rather than all starting at once.
+	scanned, err := s.Store.Meta("first_scan_done")
+	if err != nil {
+		return err
+	}
+	firstScan := scanned == ""
+
+	changes := watch.Classify(tracked, files)
+	for _, r := range changes.Renamed {
+		if err := s.applyRename(r); err != nil {
+			s.Log.Printf("rename %s: %v", r.From.Path, err)
+		}
+	}
+	for _, p := range changes.New {
+		f := files[p]
+		if err := s.Store.AddSource(p, f.Size, f.MtimeNS, firstScan); err != nil {
+			return err
+		}
+	}
+	for _, p := range changes.Changed {
+		f := files[p]
+		if err := s.Store.UpdateSource(p, f.Size, f.MtimeNS); err != nil {
+			return err
+		}
+		if _, err := s.Store.CancelForPath(p, ""); err != nil {
+			return err
+		}
+	}
+	for _, p := range changes.Returned {
+		if err := s.Store.SetMissing(p, 0); err != nil {
+			return err
+		}
+	}
+	if err := s.handleMissing(ctx, changes.Missing, len(tracked)); err != nil {
+		return err
+	}
+	if firstScan {
+		if err := s.Store.SetMeta("first_scan_done", "1"); err != nil {
+			return err
+		}
+		if len(changes.New) > 0 && s.Cfg.Mode == config.ModeAuto {
+			s.Log.Printf("first scan: %d existing files recorded as backlog, none queued", len(changes.New))
+		}
+	}
+	if err := s.queueStable(); err != nil {
+		return err
+	}
+	return s.feedBackfill(ctx)
+}
+
+func (s *Service) applyRename(r watch.Rename) error {
+	if r.From.EncodedSize >= 0 {
+		if err := s.moveOutput(OutputPath(r.From.Path), OutputPath(r.To)); err != nil {
+			return err
+		}
+	} else if err := s.removeStub(OutputPath(r.From.Path)); err != nil {
+		return err
+	}
+	if _, err := s.Store.CancelForPath(r.From.Path, ""); err != nil {
+		return err
+	}
+	if err := s.Store.RenamePlacements(OutputPath(r.From.Path), OutputPath(r.To)); err != nil {
+		return err
+	}
+	return s.Store.RenameSource(r.From.Path, r.To)
+}
+
+func (s *Service) handleMissing(ctx context.Context, missing []*queue.Source, tracked int) error {
+	now := s.Store.Now().Unix()
+	for _, src := range missing {
+		if src.MissingSince == 0 {
+			src.MissingSince = now
+			if err := s.Store.SetMissing(src.Path, now); err != nil {
+				return err
+			}
+		}
+	}
+
+	massive := len(missing) >= massDeleteMin && len(missing)*100 > s.Cfg.MassDeletePercent*tracked
+	s.mu.Lock()
+	wasPaused := s.deletePaused
+	s.deletePaused = massive
+	s.mu.Unlock()
+	if massive {
+		if !wasPaused {
+			s.send(ctx, fmt.Sprintf("Deletions paused: %d of %d sources are missing. Check the originals disk. If this is intended, raise MASS_DELETE_PERCENT.", len(missing), tracked))
+		}
+		return nil
+	}
+
+	grace := int64(s.Cfg.DeleteGrace.Seconds())
+	for _, src := range missing {
+		if now-src.MissingSince < grace {
+			continue
+		}
+		if err := s.removeSource(src); err != nil {
+			s.Log.Printf("remove %s: %v", src.Path, err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) removeSource(src *queue.Source) error {
+	if _, err := s.Store.CancelForPath(src.Path, ""); err != nil {
+		return err
+	}
+	if err := s.withdrawPlacements(OutputPath(src.Path)); err != nil {
+		return err
+	}
+	if err := s.removeOutput(OutputPath(src.Path)); err != nil {
+		return err
+	}
+	return s.Store.DeleteSource(src.Path)
+}
+
+func (s *Service) removeStub(outputPath string) error {
+	target := filepath.Join(s.Cfg.LibraryDir, filepath.FromSlash(outputPath))
+	if _, err := os.Stat(string(s.Stub)); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	isStub, err := s.Stub.Is(target)
+	if err != nil || !isStub {
+		return err
+	}
+	return os.Remove(target)
+}
+
+func (s *Service) queueStable() error {
+	sources, err := s.Store.Sources()
+	if err != nil {
+		return err
+	}
+	requested, err := s.Store.RequestedPaths()
+	if err != nil {
+		return err
+	}
+	now := s.Store.Now().Unix()
+	stable := int64(s.Cfg.StableFor.Seconds())
+	owners := map[string]string{}
+	for _, src := range sources {
+		if src.MissingSince != 0 {
+			continue
+		}
+		output := OutputPath(src.Path)
+		if owner, taken := owners[output]; taken {
+			// x.mkv and x.avi would overwrite each other's x.mp4.
+			s.Log.Printf("skipping %s: its output is already produced by %s", src.Path, owner)
+			continue
+		}
+		owners[output] = src.Path
+		if src.Encoded() || now-src.LastChanged < stable {
+			continue
+		}
+		if s.Cfg.Mode == config.ModeManual {
+			if src.EncodedSize < 0 {
+				if err := s.Stub.Create(filepath.Join(s.Cfg.LibraryDir, filepath.FromSlash(output))); err != nil {
+					return err
+				}
+			}
+			// A title is only encoded unasked if it was already live, so an
+			// upgrade replaces it, or if a viewer's request is still open.
+			if src.EncodedSize < 0 && !requested[src.Path] {
+				continue
+			}
+		} else if src.Backlog {
+			continue
+		}
+		if _, err := s.Store.Enqueue(s.newJob(src, queue.PriorityNew)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureQueued makes sure a current job exists, reviving a cancelled one. A
+// failed job stays failed, because replaying a stub is not an operator's retry.
+func (s *Service) ensureQueued(src *queue.Source) (*queue.Job, error) {
+	j := s.newJob(src, queue.PriorityNew)
+	created, err := s.Store.Enqueue(j)
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		return s.Store.Get(j.ID)
+	}
+	existing, err := s.Store.Get(j.ID)
+	if err != nil {
+		return nil, err
+	}
+	if existing.State == queue.StateCancelled {
+		if err := s.Store.Retry(j.ID); err != nil {
+			return nil, err
+		}
+		return s.Store.Get(j.ID)
+	}
+	return existing, nil
+}
+
+func (s *Service) newJob(src *queue.Source, priority int) *queue.Job {
+	return &queue.Job{
+		ID:          job.ComputeID(src.Path, src.Size, src.MtimeNS, s.Profile, src.Revision),
+		Path:        src.Path,
+		OutputPath:  OutputPath(src.Path),
+		SourceSize:  src.Size,
+		SourceMtime: src.MtimeNS,
+		Revision:    src.Revision,
+		Profile:     s.Profile,
+		Priority:    priority,
+	}
+}
+
+// Add queues one tracked source by hand, including one held in the backlog.
+func (s *Service) Add(sourcePath string) (string, error) {
+	src, err := s.Store.Source(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", sourcePath, err)
+	}
+	if src.Encoded() {
+		return "", fmt.Errorf("%s is already encoded, order a re-encode instead", sourcePath)
+	}
+	j := s.newJob(src, queue.PriorityNew)
+	existing, err := s.Store.Get(j.ID)
+	if err == nil && existing.State != queue.StateCancelled {
+		return "", fmt.Errorf("job %s is already %s", j.ID, existing.State)
+	}
+	if err != nil && !errors.Is(err, queue.ErrNotFound) {
+		return "", err
+	}
+	queued, err := s.ensureQueued(src)
+	if err != nil {
+		return "", err
+	}
+	return queued.ID, nil
+}
+
+// ReencodeOptions are the operator's choices for a re-encode order.
+type ReencodeOptions struct {
+	Reason      string
+	ForceEncode bool
+	Software    bool
+}
+
+// Reencode orders a title encoded again. The current output stays live until
+// the new one is verified and published.
+func (s *Service) Reencode(sourcePath string, opts ReencodeOptions) (string, error) {
+	src, err := s.Store.Source(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", sourcePath, err)
+	}
+	if _, err := os.Stat(filepath.Join(s.Cfg.OriginalsDir, filepath.FromSlash(sourcePath))); err != nil {
+		return "", fmt.Errorf("cannot re-encode without the original: %w", err)
+	}
+	active, err := s.Store.HasActive(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if active {
+		return "", fmt.Errorf("%s already has a job in progress", sourcePath)
+	}
+	if src.Revision, err = s.Store.BumpRevision(sourcePath); err != nil {
+		return "", err
+	}
+	j := s.newJob(src, queue.PriorityNew)
+	j.Reason = opts.Reason
+	j.ForceEncode = opts.ForceEncode
+	j.Software = opts.Software
+	if _, err := s.Store.Enqueue(j); err != nil {
+		return "", err
+	}
+	return j.ID, nil
+}
+
+// WorkerJob builds the job a worker receives, with paths as it sees them.
+func (s *Service) WorkerJob(q *queue.Job) *job.Job {
+	// Without rclone paths the worker transfers through the control API, and
+	// the orchestrator picks the files from the job's lease, not these values.
+	source, incoming := q.Path, "control-api"
+	if s.Cfg.RemoteOriginals != "" {
+		source, incoming = s.Cfg.RemoteOriginals+"/"+q.Path, s.Cfg.RemoteIncoming
+	}
+	return &job.Job{
+		ID:          q.ID,
+		Source:      source,
+		Incoming:    incoming,
+		OutputPath:  q.OutputPath,
+		Revision:    q.Revision,
+		Reason:      q.Reason,
+		ForceEncode: q.ForceEncode,
+		Software:    q.Software,
+		Profile:     s.Cfg.Output,
+	}
+}
+
+// OutputPath maps a source to its library path.
+func OutputPath(sourcePath string) string {
+	return strings.TrimSuffix(sourcePath, path.Ext(sourcePath)) + ".mp4"
+}
+
+// Title is a short display name for messages.
+func Title(sourcePath string) string {
+	base := path.Base(sourcePath)
+	return strings.TrimSuffix(base, path.Ext(base))
+}
+
+func (s *Service) requestRefresh(ctx context.Context) {
+	if s.Library == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// One season pack publishes many files, so each one pushes the scan back.
+	if s.refreshTimer != nil {
+		s.refreshTimer.Stop()
+	}
+	s.refreshTimer = time.AfterFunc(s.Cfg.LibraryDebounce, func() {
+		if err := s.Library.Refresh(context.WithoutCancel(ctx)); err != nil && !errors.Is(err, context.Canceled) {
+			s.Log.Printf("library refresh: %v", err)
+		}
+	})
+}
+
+func (s *Service) stopRefreshTimer() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refreshTimer != nil {
+		s.refreshTimer.Stop()
+	}
+}

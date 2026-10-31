@@ -1,0 +1,30 @@
+[Unit]
+Description=Jellyfinner edge file server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Its own user, with read access to /edge through the group only.
+User=edge-serve
+Group=nginx
+EnvironmentFile=/etc/jellyfinner/edge-serve.env
+ExecStart=/usr/local/bin/edge-agent serve --addr 127.0.0.1:8205 --dir /edge
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadOnlyPaths=/edge
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

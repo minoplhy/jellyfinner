@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# /etc/init.d/jellyfinner-edge-agent on Alpine. Check Phase 0 step 8 first.
+
+description="Jellyfinner edge agent"
+supervisor=supervise-daemon
+command=/usr/local/bin/edge-agent
+command_args="pull --dir /edge --limit-mb 20"
+command_user="edge-agent:edge-agent"
+output_log=/var/log/jellyfinner-edge-agent.log
+error_log=/var/log/jellyfinner-edge-agent.log
+no_new_privs=yes
+capabilities="^"
+respawn_delay=15
+rc_cgroup_memory_max=134217728
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	# Read here, so the token never appears in the process arguments.
+	. /etc/jellyfinner/edge-agent.env
+	export ORCHESTRATOR_URL NODE_TOKEN
+	checkpath --file --owner edge-agent:edge-agent --mode 0640 "$output_log"
+}

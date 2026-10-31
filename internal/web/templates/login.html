@@ -1,0 +1,11 @@
+{{define "content"}}
+<div class="panel login">
+  <h1>Jellyfinner</h1>
+  {{with .Content}}<p class="error">{{.}}</p>{{end}}
+  <form method="post" action="/login">
+    <label>Jellyfin username <input type="text" name="username" autocomplete="username" required autofocus></label>
+    <label>Password <input type="password" name="password" autocomplete="current-password"></label>
+    <button class="primary">Sign in</button>
+  </form>
+</div>
+{{end}}

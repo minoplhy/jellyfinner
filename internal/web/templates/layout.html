@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false}'>
+<title>{{.Title}} · Jellyfinner</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js"></script>
+</head>
+<body>
+{{if .User}}
+<nav>
+  <span class="brand">Jellyfinner</span>
+  <a href="/">Dashboard</a>
+  <a href="/queue">Queue</a>
+  <a href="/library">Library</a>
+  <a href="/nodes">Nodes</a>
+  <span class="right">
+    <span>{{.Mode}} mode · {{.User}}</span>
+    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>Sign out</button></form>
+  </span>
+</nav>
+{{end}}
+<main>
+{{with .Flash}}<div class="flash">{{.}}</div>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>

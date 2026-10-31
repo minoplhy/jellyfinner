@@ -1,0 +1,29 @@
+[Unit]
+Description=Jellyfinner encoding worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=jellyfinner
+Group=jellyfinner
+# On a host with a real GPU, add SupplementaryGroups=render video and use
+# --backend vaapi.
+# Sets ORCHESTRATOR_URL and NODE_TOKEN. Keep it mode 600.
+EnvironmentFile=/etc/jellyfinner/worker.env
+ExecStart=/usr/local/bin/worker serve --scratch /var/lib/jellyfinner/scratch --backend software --ffmpeg /usr/lib/jellyfin-ffmpeg/ffmpeg --ffprobe /usr/lib/jellyfin-ffmpeg/ffprobe
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+StateDirectory=jellyfinner
+# Software encodes must not starve the host.
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

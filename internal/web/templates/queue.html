@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1>Queue</h1>
+<div class="panel">
+  <table>
+    <thead><tr><th>Title</th><th>State</th><th>Try</th><th>Progress</th><th>Reason / error</th><th></th></tr></thead>
+    <tbody hx-get="/fragments/queue" hx-trigger="every 3s" hx-swap="innerHTML">{{template "rows" .Content}}</tbody>
+  </table>
+</div>
+{{end}}
+
+{{define "rows"}}
+{{$csrf := .CSRF}}
+{{range .Jobs}}
+<tr>
+  <td class="path"><a href="/jobs/{{.ID}}">{{.Path}}</a></td>
+  <td class="state-{{.State}}">{{.State}}</td>
+  <td>{{.Attempts}}</td>
+  <td>{{if eq .State "running"}}{{.Stage}} {{pct .Fraction}}{{end}}</td>
+  <td>{{if .Error}}<span class="error">{{.Error}}</span>{{else}}<span class="muted">{{.Reason}}</span>{{end}}</td>
+  <td>
+    {{if eq .State "queued"}}
+    <form method="post" action="/jobs/{{.ID}}/bump"><input type="hidden" name="csrf" value="{{$csrf}}"><button>Bump</button></form>
+    {{end}}
+    {{if or (eq .State "queued") (eq .State "running")}}
+    <form method="post" action="/jobs/{{.ID}}/cancel"><input type="hidden" name="csrf" value="{{$csrf}}"><button>Cancel</button></form>
+    {{end}}
+    {{if or (eq .State "failed") (eq .State "cancelled")}}
+    <form method="post" action="/jobs/{{.ID}}/retry"><input type="hidden" name="csrf" value="{{$csrf}}"><button>Retry</button></form>
+    {{end}}
+  </td>
+</tr>
+{{else}}<tr><td class="muted" colspan="6">The queue is empty.</td></tr>{{end}}
+{{end}}

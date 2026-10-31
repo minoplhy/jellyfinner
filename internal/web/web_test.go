@@ -1,0 +1,465 @@
+package web
+
+import (
+	"context"
+	"io"
+	"log"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"jellyfinner/internal/config"
+	"jellyfinner/internal/jellyfin"
+	"jellyfinner/internal/notify"
+	"jellyfinner/internal/orchestrator"
+	"jellyfinner/internal/queue"
+)
+
+type fakeAuth struct {
+	ended []string
+	calls int
+}
+
+func (f *fakeAuth) Authenticate(_ context.Context, username, password string) (bool, string, error) {
+	f.calls++
+	switch {
+	case username == "admin" && password == "pw":
+		return true, "tok-admin", nil
+	case username == "viewer" && password == "pw":
+		return false, "tok-viewer", nil
+	}
+	return false, "", jellyfin.ErrBadLogin
+}
+
+func (f *fakeAuth) EndSession(_ context.Context, token string) error {
+	f.ended = append(f.ended, token)
+	return nil
+}
+
+type fixture struct {
+	t      *testing.T
+	svc    *orchestrator.Service
+	store  *queue.Store
+	cfg    *config.Config
+	auth   *fakeAuth
+	server *httptest.Server
+	now    time.Time
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	root := t.TempDir()
+	cfg := &config.Config{
+		Mode: config.ModeAuto, OriginalsDir: filepath.Join(root, "o"), LibraryDir: filepath.Join(root, "l"),
+		IncomingDir: filepath.Join(root, "i"), RemoteOriginals: "origin:/o", RemoteIncoming: "origin:/i",
+		LeaseFor: time.Minute, MaxAttempts: 2, StableFor: time.Minute, DeleteGrace: time.Hour, MassDeletePercent: 20,
+		Nodes: []config.Node{{Name: "worker1"}},
+	}
+	for _, d := range []string{cfg.OriginalsDir, cfg.LibraryDir, cfg.IncomingDir} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := queue.Open(filepath.Join(root, "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	store.RetryDelay = 0
+	f := &fixture{t: t, store: store, cfg: cfg, auth: &fakeAuth{}, now: time.Unix(2000000, 0)}
+	store.Now = func() time.Time { return f.now }
+	logger := log.New(io.Discard, "", 0)
+	f.svc = orchestrator.New(cfg, store, notify.New("", ""), nil, logger)
+	seen := func() map[string]time.Time { return map[string]time.Time{"worker1": f.now} }
+	f.server = httptest.NewServer(New(f.svc, f.auth, seen, logger).Handler())
+	t.Cleanup(f.server.Close)
+	return f
+}
+
+func (f *fixture) add(path string) {
+	f.t.Helper()
+	full := filepath.Join(f.cfg.OriginalsDir, path)
+	if err := os.WriteFile(full, []byte("x"), 0o640); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := f.svc.ScanOnce(context.Background()); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// client is a browser with a cookie jar that does not follow redirects.
+func (f *fixture) client() *http.Client {
+	f.t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+func (f *fixture) login(c *http.Client, user, password string) int {
+	f.t.Helper()
+	resp, err := c.PostForm(f.server.URL+"/login", url.Values{"username": {user}, "password": {password}})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func (f *fixture) admin() *http.Client {
+	f.t.Helper()
+	c := f.client()
+	if got := f.login(c, "admin", "pw"); got != http.StatusSeeOther {
+		f.t.Fatalf("login = %d", got)
+	}
+	return c
+}
+
+func (f *fixture) get(c *http.Client, path string) (int, string) {
+	f.t.Helper()
+	resp, err := c.Get(f.server.URL + path)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return resp.StatusCode, string(body)
+}
+
+var csrfField = regexp.MustCompile(`name="csrf" value="([0-9a-f]+)"`)
+
+func (f *fixture) csrf(c *http.Client) string {
+	f.t.Helper()
+	_, body := f.get(c, "/library")
+	m := csrfField.FindStringSubmatch(body)
+	if m == nil {
+		f.t.Fatal("no CSRF token on the page")
+	}
+	return m[1]
+}
+
+func (f *fixture) post(c *http.Client, path string, form url.Values) (int, string) {
+	f.t.Helper()
+	resp, err := c.PostForm(f.server.URL+path, form)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return resp.StatusCode, string(body)
+}
+
+func TestEveryPageNeedsLogin(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+	for _, path := range []string{"/", "/queue", "/library", "/jobs/x"} {
+		got, _ := f.get(c, path)
+		if got != http.StatusSeeOther {
+			t.Errorf("GET %s = %d", path, got)
+		}
+	}
+	for _, path := range []string{"/library/add", "/library/reencode", "/library/reencode/confirm", "/jobs/x/cancel", "/logout"} {
+		got, _ := f.post(c, path, url.Values{})
+		if got != http.StatusUnauthorized {
+			t.Errorf("POST %s = %d", path, got)
+		}
+	}
+	req, err := http.NewRequest(http.MethodGet, f.server.URL+"/fragments/queue", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("HX-Request", "true")
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("an expired fragment must not swap in the login page: %d", resp.StatusCode)
+	}
+}
+
+func TestLogin(t *testing.T) {
+	f := newFixture(t)
+	if got := f.login(f.client(), "viewer", "pw"); got != http.StatusUnauthorized {
+		t.Errorf("a non-admin must be refused: %d", got)
+	}
+	if got := f.login(f.client(), "admin", "wrong"); got != http.StatusUnauthorized {
+		t.Errorf("wrong password: %d", got)
+	}
+	c := f.admin()
+	if got, body := f.get(c, "/"); got != http.StatusOK || !strings.Contains(body, "Dashboard") {
+		t.Errorf("dashboard = %d", got)
+	}
+	if len(f.auth.ended) != 2 || f.auth.ended[0] != "tok-viewer" || f.auth.ended[1] != "tok-admin" {
+		t.Errorf("Jellyfin sessions must be closed at once: %v", f.auth.ended)
+	}
+}
+
+func TestLoginResponsesMatchForBadUserAndNonAdmin(t *testing.T) {
+	f := newFixture(t)
+	first, _ := f.post(f.client(), "/login", url.Values{"username": {"viewer"}, "password": {"pw"}})
+	_, a := f.post(f.client(), "/login", url.Values{"username": {"viewer"}, "password": {"pw"}})
+	_, b := f.post(f.client(), "/login", url.Values{"username": {"nobody"}, "password": {"x"}})
+	if first != http.StatusUnauthorized || a != b {
+		t.Error("the page must not confirm which accounts exist")
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	f := newFixture(t)
+	c := f.client()
+	for range loginLimit {
+		f.login(c, "admin", "wrong")
+	}
+	calls := f.auth.calls
+	if got := f.login(c, "admin", "pw"); got != http.StatusTooManyRequests {
+		t.Errorf("after too many failures: %d", got)
+	}
+	if f.auth.calls != calls {
+		t.Error("a blocked attempt must not reach Jellyfin")
+	}
+	f.now = f.now.Add(2 * loginWindow)
+	if got := f.login(c, "admin", "pw"); got != http.StatusSeeOther {
+		t.Errorf("after the window: %d", got)
+	}
+}
+
+func TestSessionExpiresAndLogoutEnds(t *testing.T) {
+	f := newFixture(t)
+	c := f.admin()
+	f.now = f.now.Add(sessionLife + time.Minute)
+	if got, _ := f.get(c, "/"); got != http.StatusSeeOther {
+		t.Errorf("expired session = %d", got)
+	}
+
+	c = f.admin()
+	token := f.csrf(c)
+	if got, _ := f.post(c, "/logout", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
+		t.Fatalf("logout = %d", got)
+	}
+	if got, _ := f.get(c, "/"); got != http.StatusSeeOther {
+		t.Errorf("after logout = %d", got)
+	}
+}
+
+func TestCookieFlags(t *testing.T) {
+	f := newFixture(t)
+	resp, err := f.client().PostForm(f.server.URL+"/login", url.Values{"username": {"admin"}, "password": {"pw"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == cookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("cookie = %+v", cookie)
+	}
+}
+
+func TestCSRFRequired(t *testing.T) {
+	f := newFixture(t)
+	f.add("a.mkv")
+	c := f.admin()
+	for _, form := range []url.Values{{"path": {"a.mkv"}}, {"path": {"a.mkv"}, "csrf": {"wrong"}}} {
+		if got, _ := f.post(c, "/library/add", form); got != http.StatusForbidden {
+			t.Errorf("form %v = %d", form, got)
+		}
+	}
+	jobs, err := f.store.List(10)
+	if err != nil || len(jobs) != 0 {
+		t.Errorf("a refused form queued work: %+v, %v", jobs, err)
+	}
+}
+
+func TestCSRFIsPerSession(t *testing.T) {
+	f := newFixture(t)
+	f.add("a.mkv")
+	one, two := f.admin(), f.admin()
+	if got, _ := f.post(two, "/library/add", url.Values{"path": {"a.mkv"}, "csrf": {f.csrf(one)}}); got != http.StatusForbidden {
+		t.Errorf("another session's token = %d", got)
+	}
+}
+
+func TestLibraryAddAndQueueActions(t *testing.T) {
+	f := newFixture(t)
+	f.add("a.mkv")
+	c := f.admin()
+	token := f.csrf(c)
+	if got, _ := f.post(c, "/library/add", url.Values{"csrf": {token}, "path": {"a.mkv"}}); got != http.StatusSeeOther {
+		t.Fatalf("add = %d", got)
+	}
+	jobs, err := f.store.List(10)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs = %+v, %v", jobs, err)
+	}
+	id := jobs[0].ID
+	if got, body := f.get(c, "/queue"); got != http.StatusOK || !strings.Contains(body, "a.mkv") {
+		t.Errorf("queue = %d", got)
+	}
+	if got, _ := f.post(c, "/jobs/"+id+"/cancel", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
+		t.Errorf("cancel = %d", got)
+	}
+	if j, _ := f.store.Get(id); j.State != queue.StateCancelled {
+		t.Errorf("state = %s", j.State)
+	}
+	if got, _ := f.post(c, "/jobs/"+id+"/retry", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
+		t.Errorf("retry = %d", got)
+	}
+	if got, _ := f.post(c, "/jobs/"+id+"/delete", url.Values{"csrf": {token}}); got != http.StatusNotFound {
+		t.Errorf("unknown action = %d", got)
+	}
+	if _, body := f.get(c, "/fragments/queue"); !strings.Contains(body, "Cancel") {
+		t.Error("fragment missing actions")
+	}
+	if got, _ := f.get(c, "/jobs/nope"); got != http.StatusNotFound {
+		t.Errorf("unknown job = %d", got)
+	}
+}
+
+func TestReencodeShowsSizeThenNeedsReason(t *testing.T) {
+	f := newFixture(t)
+	f.add("a.mkv")
+	c := f.admin()
+	token := f.csrf(c)
+
+	got, body := f.post(c, "/library/reencode", url.Values{"csrf": {token}, "path": {"a.mkv"}})
+	if got != http.StatusOK || !strings.Contains(body, "This pulls") {
+		t.Fatalf("confirm = %d", got)
+	}
+	jobs, _ := f.store.List(10)
+	if len(jobs) != 0 {
+		t.Fatal("the confirmation step must not order anything")
+	}
+	if got, _ := f.post(c, "/library/reencode/confirm", url.Values{"csrf": {token}, "path": {"a.mkv"}}); got != http.StatusSeeOther {
+		t.Fatalf("no reason = %d", got)
+	}
+	if jobs, _ = f.store.List(10); len(jobs) != 0 {
+		t.Fatal("a reason is required")
+	}
+	form := url.Values{"csrf": {token}, "path": {"a.mkv"}, "reason": {"audio"}, "force_encode": {"on"}}
+	if got, _ := f.post(c, "/library/reencode/confirm", form); got != http.StatusSeeOther {
+		t.Fatalf("order = %d", got)
+	}
+	jobs, _ = f.store.List(10)
+	if len(jobs) != 1 || jobs[0].Reason != "audio" || !jobs[0].ForceEncode || jobs[0].Software {
+		t.Errorf("jobs = %+v", jobs)
+	}
+}
+
+func TestHostileNamesAreEscaped(t *testing.T) {
+	f := newFixture(t)
+	f.add(`<script>alert(1)<script>.mkv`)
+	c := f.admin()
+	_, body := f.get(c, "/library")
+	if strings.Contains(body, "<script>alert") {
+		t.Error("a file name reached the page unescaped")
+	}
+	_, body = f.get(c, "/library?q=<img src=x>")
+	if strings.Contains(body, "<img src=x>") {
+		t.Error("the search box reflected unescaped input")
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	f := newFixture(t)
+	resp, err := f.client().Get(f.server.URL + "/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	policy := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(policy, "script-src 'self'") || strings.Contains(policy, "unsafe") {
+		t.Errorf("policy = %q", policy)
+	}
+	if resp.Header.Get("X-Frame-Options") != "DENY" {
+		t.Error("clickjacking header missing")
+	}
+}
+
+func TestStaticAssets(t *testing.T) {
+	f := newFixture(t)
+	for _, path := range []string{"/static/htmx.min.js", "/static/app.css"} {
+		if got, _ := f.get(f.client(), path); got != http.StatusOK {
+			t.Errorf("%s = %d", path, got)
+		}
+	}
+}
+
+func TestDashboardShowsNodeAndBackfill(t *testing.T) {
+	f := newFixture(t)
+	f.add("a.mkv")
+	c := f.admin()
+	_, body := f.get(c, "/fragments/dashboard")
+	for _, want := range []string{"worker1", "online", "Stopped", "1 titles left"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard missing %q", want)
+		}
+	}
+}
+
+func TestNodesPageAndCacheAction(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.EdgeNodes = []config.EdgeNode{{Name: "edge1", URL: "https://edge1.example.com", QuotaBytes: 1000}}
+	f.add("a.mkv")
+	info, err := os.Stat(filepath.Join(f.cfg.OriginalsDir, "a.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetEncoded("a.mkv", info.Size(), info.ModTime().UnixNano(), "", strings.Repeat("a", 64), 5); err != nil {
+		t.Fatal(err)
+	}
+	c := f.admin()
+	token := f.csrf(c)
+	if _, body := f.get(c, "/library"); !strings.Contains(body, "Cache to node") {
+		t.Error("library has no cache action")
+	}
+	form := url.Values{"csrf": {token}, "path": {"a.mkv"}, "node": {"edge1"}}
+	if got, _ := f.post(c, "/library/cache", form); got != http.StatusSeeOther {
+		t.Fatalf("cache = %d", got)
+	}
+	if got, _ := f.post(c, "/library/cache", url.Values{"path": {"a.mkv"}, "node": {"edge1"}}); got != http.StatusForbidden {
+		t.Errorf("cache without CSRF = %d", got)
+	}
+	got, body := f.get(c, "/nodes")
+	if got != http.StatusOK || !strings.Contains(body, "a.mp4") || !strings.Contains(body, "pulling") {
+		t.Errorf("nodes = %d", got)
+	}
+	remove := url.Values{"csrf": {token}, "output": {"a.mp4"}}
+	if got, _ := f.post(c, "/nodes/edge1/remove", remove); got != http.StatusSeeOther {
+		t.Errorf("remove = %d", got)
+	}
+	if ps, _ := f.store.NodePlacements("edge1"); ps[0].State != queue.PlacementDeleting {
+		t.Errorf("state = %s", ps[0].State)
+	}
+}
+
+func TestNoNodesConfiguredHidesCacheAction(t *testing.T) {
+	f := newFixture(t)
+	f.add("a.mkv")
+	c := f.admin()
+	if _, body := f.get(c, "/library"); strings.Contains(body, "Cache to node") {
+		t.Error("no node, no cache action")
+	}
+	if got, body := f.get(c, "/nodes"); got != http.StatusOK || !strings.Contains(body, "No edge nodes") {
+		t.Errorf("nodes = %d", got)
+	}
+}

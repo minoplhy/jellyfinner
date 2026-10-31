@@ -1,0 +1,28 @@
+[Unit]
+Description=Jellyfinner orchestrator
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/originals /srv/library /srv/incoming
+
+[Service]
+User=jellyfinner
+Group=jellyfinner
+WorkingDirectory=/etc/jellyfinner
+ExecStart=/usr/local/bin/orchestrator --env /etc/jellyfinner/orchestrator.env serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+StateDirectory=jellyfinner
+ReadWritePaths=/srv/library /srv/incoming
+ReadOnlyPaths=/srv/originals
+
+[Install]
+WantedBy=multi-user.target

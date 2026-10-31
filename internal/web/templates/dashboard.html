@@ -1,0 +1,39 @@
+{{define "content"}}
+<h1>Dashboard</h1>
+<div hx-get="/fragments/dashboard" hx-trigger="every 3s" hx-swap="innerHTML">{{template "status" .Content}}</div>
+{{end}}
+
+{{define "status"}}
+<div class="tiles">
+  <div class="tile"><b>{{index .Counts "queued"}}</b><span>Queued</span></div>
+  <div class="tile"><b>{{index .Counts "running"}}</b><span>Running</span></div>
+  <div class="tile"><b>{{index .Counts "publishing"}}</b><span>Publishing</span></div>
+  <div class="tile"><b>{{index .Counts "done"}}</b><span>Done</span></div>
+  <div class="tile"><b>{{index .Counts "failed"}}</b><span>Failed</span></div>
+</div>
+<h2>Nodes</h2>
+<div class="panel">
+  <table>
+    <tr><th>Node</th><th>State</th><th>Last seen</th></tr>
+    {{range .Nodes}}
+    <tr><td>{{.Name}}</td>
+      <td class="{{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</td>
+      <td class="muted">{{if .Seen.IsZero}}not since start{{else}}{{agoT .Seen}}{{end}}</td></tr>
+    {{else}}<tr><td class="muted">No nodes configured.</td></tr>{{end}}
+  </table>
+</div>
+<h2>Running now</h2>
+<div class="panel">
+  <table>
+    <tr><th>Title</th><th>Stage</th><th>Progress</th><th>Node</th></tr>
+    {{range .Active}}
+    <tr><td class="path"><a href="/jobs/{{.ID}}">{{.Path}}</a></td><td>{{.Stage}}</td><td>{{pct .Fraction}}</td><td>{{.Node}}</td></tr>
+    {{else}}<tr><td class="muted">Nothing is running.</td></tr>{{end}}
+  </table>
+</div>
+<h2>Backfill</h2>
+<div class="panel">
+  <p>{{if .Backfill.Active}}Running{{else}}Stopped{{end}} · {{.Backfill.Remaining}} titles left ({{size .Backfill.RemainingBytes}}) · {{.Backfill.InProgress}} in progress · {{.Backfill.Failed}} failed or cancelled</p>
+  <p class="muted">Today: {{size .Backfill.UsedToday}} of {{size .Budget}}. Start and pause it with the CLI.</p>
+</div>
+{{end}}

@@ -1,0 +1,10 @@
+# /etc/wireguard/wg0.conf on the worker node. Only the worker dials out, so it needs no open port.
+[Interface]
+Address = 10.8.0.2/24
+PrivateKey = REPLACE_AU_PRIVATE_KEY
+
+[Peer]
+PublicKey = REPLACE_FR_PUBLIC_KEY
+Endpoint = REPLACE_FR_PUBLIC_IP:51820
+AllowedIPs = 10.8.0.1/32
+PersistentKeepalive = 25

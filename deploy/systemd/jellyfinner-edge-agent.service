@@ -1,0 +1,31 @@
+[Unit]
+Description=Jellyfinner edge agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=edge-agent
+Group=edge-agent
+EnvironmentFile=/etc/jellyfinner/edge-agent.env
+ExecStart=/usr/local/bin/edge-agent pull --dir /edge --limit-mb 20
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/edge
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+MemoryMax=128M
+CPUWeight=20
+IOWeight=20
+
+[Install]
+WantedBy=multi-user.target

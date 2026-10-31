@@ -1,0 +1,20 @@
+[Unit]
+Description=Jellyfinner edge router
+After=network-online.target jellyfin.service
+Wants=network-online.target
+
+[Service]
+User=jellyfinner
+Group=jellyfinner
+WorkingDirectory=/etc/jellyfinner
+ExecStart=/usr/local/bin/orchestrator --env /etc/jellyfinner/orchestrator.env router
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StateDirectory=jellyfinner
+
+[Install]
+WantedBy=multi-user.target

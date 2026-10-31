@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# /etc/init.d/jellyfinner-edge-serve on Alpine.
+
+description="Jellyfinner edge file server"
+supervisor=supervise-daemon
+command=/usr/local/bin/edge-agent
+command_args="serve --addr 127.0.0.1:8205 --dir /edge"
+command_user="edge-serve:nginx"
+output_log=/var/log/jellyfinner-edge-serve.log
+error_log=/var/log/jellyfinner-edge-serve.log
+no_new_privs=yes
+capabilities="^"
+respawn_delay=5
+rc_cgroup_memory_max=67108864
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	# Read here, so the key never appears in the process arguments.
+	. /etc/jellyfinner/edge-serve.env
+	export EDGE_SIGNING_KEY
+	checkpath --file --owner edge-serve:nginx --mode 0640 "$output_log"
+}

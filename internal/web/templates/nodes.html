@@ -1,0 +1,29 @@
+{{define "content"}}
+{{$csrf := .Content.CSRF}}
+<h1>Edge nodes</h1>
+{{range .Content.Nodes}}
+{{$node := .Name}}
+<div class="panel">
+  <h2>{{.Name}} <span class="{{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></h2>
+  <p class="muted">{{.URL}} · {{size .Used}} of {{size .Quota}} quota · {{size .Status.DiskFree}} free on disk · viewers: {{range .Viewers}}{{.}} {{else}}none{{end}}</p>
+  <table>
+    <tr><th>Title</th><th>State</th><th>Size</th><th>Last played</th><th></th></tr>
+    {{range .Placements}}
+    <tr>
+      <td class="path">{{.Output}}</td>
+      <td class="state-{{.State}}">{{.State}}{{with .Error}} <span class="error">{{.}}</span>{{end}}</td>
+      <td>{{size .Size}}</td>
+      <td class="muted">{{if .LastPlayed}}{{ago .LastPlayed}}{{else}}never{{end}}</td>
+      <td>{{if ne .State "deleting"}}
+        <form method="post" action="/nodes/{{$node}}/remove">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="hidden" name="output" value="{{.Output}}">
+          <label class="check"><input type="checkbox" name="force"> even if recently played</label>
+          <button>Remove</button>
+        </form>{{end}}</td>
+    </tr>
+    {{else}}<tr><td class="muted" colspan="5">Nothing cached.</td></tr>{{end}}
+  </table>
+</div>
+{{else}}<div class="panel muted">No edge nodes are configured.</div>{{end}}
+{{end}}

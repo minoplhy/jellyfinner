@@ -1,0 +1,30 @@
+# Worker node. Static binary, plus jellyfin-ffmpeg. rclone stays until the
+# transfer speed test decides. Build from the repository root. jellyfin-ffmpeg8
+# bundles the VAAPI user-mode drivers.
+FROM golang:1.27-bookworm AS build
+# One compile job, so builds fit on small machines.
+ENV GOFLAGS=-p=1
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd cmd
+COPY internal internal
+RUN CGO_ENABLED=0 go build -o /out/worker ./cmd/worker
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && install -d -m 755 /etc/apt/keyrings \
+    && curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg \
+    && printf 'Types: deb\nURIs: https://repo.jellyfin.org/debian\nSuites: bookworm\nComponents: main\nSigned-By: /etc/apt/keyrings/jellyfin.gpg\n' > /etc/apt/sources.list.d/jellyfin.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends jellyfin-ffmpeg8 rclone openssh-client \
+    && apt-get purge -y curl gnupg && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 10001 jellyfinner \
+    && useradd -u 10001 -g 10001 -m -s /usr/sbin/nologin jellyfinner \
+    && install -d -o 10001 -g 10001 -m 750 /scratch
+COPY --from=build /out/worker /usr/local/bin/worker
+USER 10001:10001
+ENV RCLONE_CONFIG=/config/rclone.conf
+ENTRYPOINT ["worker", "serve", "--scratch", "/scratch", "--ffmpeg", "/usr/lib/jellyfin-ffmpeg/ffmpeg", "--ffprobe", "/usr/lib/jellyfin-ffmpeg/ffprobe"]
+CMD ["--backend", "software"]
