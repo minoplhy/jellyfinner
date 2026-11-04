@@ -117,6 +117,19 @@ Nodes need no open ports, except an edge node's HTTPS. They use HTTPS, or plain 
 
 Nothing requires a particular proxy. On an edge node, see [../proxy/README.md](../proxy/README.md). On the orchestrator node, send the viewer hostname to Jellyfin, or to the router once it is proven, and the control hostname to port `8200`.
 
+### Serving under a path
+
+Subdomains need nothing extra, and paths such as `https://example.com/jellyfinner` work too. Each part answers both with and without its prefix, so your proxy may strip the prefix or keep it.
+
+| Part | What to set |
+|---|---|
+| Control API | Put the path in `CONTROL_URL`, such as `https://example.com/jellyfinner`. `node add` prints it for nodes |
+| Admin UI | `WEB_BASE_PATH`, such as `/jellyfinner-admin` |
+| Jellyfin and the router | Set Jellyfin's Base URL under Dashboard, Networking, and include it in `JELLYFIN_URL`, such as `http://host.docker.internal:8096/jellyfin`. Proxy that path to the router or to Jellyfin |
+| Edge node | Add it with `--url https://example.com/edge1`. `edge-serve` needs no setting |
+
+The control API and the admin UI need different paths, because each is its own listener.
+
 The image trusts `X-Forwarded-For` from private addresses, so allowlists and failed-login limits see real clients behind a proxy. This is safe while ports stay on `127.0.0.1`. **If you publish the control API on a public address, set `TRUSTED_PROXIES` to your proxy's address, or to an empty value.** Otherwise, on a runtime that hides client addresses, an outsider could forge the header to get around those limits.
 
 ## Optional parts

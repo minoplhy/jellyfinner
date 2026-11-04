@@ -52,9 +52,14 @@ type fixture struct {
 	jf     *fakeJellyfin
 	hits   *int
 	now    time.Time
+
+	seen *http.Request // the last request upstream received
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T) *fixture { return newFixtureAt(t, "") }
+
+// newFixtureAt puts Jellyfin under a Base URL, such as /jf.
+func newFixtureAt(t *testing.T, base string) *fixture {
 	t.Helper()
 	store, err := queue.Open(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
@@ -64,12 +69,13 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{t: t, store: store, now: time.Unix(2000000, 0), hits: new(int)}
 	store.Now = func() time.Time { return f.now }
 	f.jf = &fakeJellyfin{users: map[string]string{"alice-token": "alice", "bob-token": "bob"}, items: map[string]string{itemID: "/lib/Movies/A.mp4"}}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*f.hits++
+		f.seen = r
 		w.WriteHeader(http.StatusTeapot)
 	}))
 	t.Cleanup(upstream.Close)
-	u, err := url.Parse(upstream.URL)
+	u, err := url.Parse(upstream.URL + base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +204,7 @@ func TestPostIsNeverRedirected(t *testing.T) {
 	}
 }
 
-func TestFailsOpenToFR(t *testing.T) {
+func TestFailsOpenToOrigin(t *testing.T) {
 	cases := map[string]func(*fixture){
 		"not cached": func(*fixture) {},
 		"pulling": func(f *fixture) {
@@ -260,5 +266,34 @@ func TestUserLookupIsCached(t *testing.T) {
 	f.get(stream("alice-token"), nil)
 	if f.jf.calls != 2 {
 		t.Errorf("a revoked token must stop working soon: %d", f.jf.calls)
+	}
+}
+
+func TestJellyfinBaseURL(t *testing.T) {
+	f := newFixtureAt(t, "/jf")
+	f.cached()
+	if w := f.get("/jf"+stream("alice-token"), nil); w.Code != http.StatusFound {
+		t.Errorf("a stream under the Base URL: code = %d, want a redirect", w.Code)
+	}
+	if w := f.get("/jf/Items?x=1", nil); w.Code != http.StatusTeapot || f.seen.URL.Path != "/jf/Items" || f.seen.URL.RawQuery != "x=1" {
+		t.Errorf("passthrough reached %q, code %d", f.seen.URL.String(), w.Code)
+	}
+	// A proxy that strips the prefix sends the bare path.
+	if w := f.get(stream("alice-token"), nil); w.Code != http.StatusFound {
+		t.Errorf("a stripped stream: code = %d", w.Code)
+	}
+	if w := f.get("/jfx"+stream("alice-token"), nil); w.Code == http.StatusFound {
+		t.Error("a neighbouring path is not under the Base URL")
+	}
+}
+
+func TestPassthroughKeepsForwardedHeaders(t *testing.T) {
+	f := newFixture(t)
+	f.get("/Items", map[string]string{"X-Forwarded-For": "198.51.100.7", "X-Forwarded-Proto": "https", "Host": "tv.example.com"})
+	if got := f.seen.Header.Get("X-Forwarded-For"); got != "198.51.100.7, 192.0.2.1" {
+		t.Errorf("X-Forwarded-For = %q", got)
+	}
+	if got := f.seen.Header.Get("X-Forwarded-Proto"); got != "https" {
+		t.Errorf("an outer proxy's https must survive: %q", got)
 	}
 }

@@ -19,9 +19,11 @@ x-app: &app
     # auto encodes everything new, manual only what someone asks for.
     # Change it later only with orchestrator switch-mode.
     ENCODE_MODE: auto # EDIT
-    # The address workers and edge nodes use. Only node add reads this.
+    # The address workers and edge nodes use. It may have a path, such as
+    # https://example.com/jellyfinner.
     CONTROL_URL: https://control.example.com # EDIT
     # Jellyfin on this host. For the Jellyfin block below, use http://jellyfin:8096.
+    # Add Jellyfin's Base URL if it has one, such as http://host.docker.internal:8096/jellyfin.
     JELLYFIN_URL: http://host.docker.internal:8096 # EDIT
     # Optional in auto, required in manual. Create one in Jellyfin under
     # Dashboard, API Keys.
@@ -36,6 +38,8 @@ x-app: &app
     BACKFILL_DAILY_GB: "2"
     # Admin UI. Login goes through Jellyfin.
     WEB_ADDR: 0.0.0.0:8202
+    # To serve the admin UI under a path instead of its own hostname.
+    # WEB_BASE_PATH: /jellyfinner-admin
     # Edge delivery: alice=edge1;bob=edge1
     EDGE_VIEWERS: ""
   volumes:

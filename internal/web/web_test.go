@@ -53,11 +53,15 @@ type fixture struct {
 	now    time.Time
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T) *fixture { return newFixtureAt(t, "") }
+
+// newFixtureAt serves the UI under a base path, such as /admin.
+func newFixtureAt(t *testing.T, base string) *fixture {
 	t.Helper()
 	root := t.TempDir()
 	cfg := &config.Config{
-		Mode: config.ModeAuto, OriginalsDir: filepath.Join(root, "o"), LibraryDir: filepath.Join(root, "l"),
+		WebBasePath: base,
+		Mode:        config.ModeAuto, OriginalsDir: filepath.Join(root, "o"), LibraryDir: filepath.Join(root, "l"),
 		IncomingDir: filepath.Join(root, "i"), RemoteOriginals: "origin:/o", RemoteIncoming: "origin:/i",
 		LeaseFor: time.Minute, MaxAttempts: 2, StableFor: time.Minute, DeleteGrace: time.Hour, MassDeletePercent: 20,
 	}
@@ -465,5 +469,59 @@ func TestNoNodesConfiguredHidesCacheAction(t *testing.T) {
 	}
 	if got, body := f.get(c, "/nodes"); got != http.StatusOK || !strings.Contains(body, "No edge nodes") {
 		t.Errorf("nodes = %d", got)
+	}
+}
+
+func TestBasePath(t *testing.T) {
+	f := newFixtureAt(t, "/admin")
+	c := f.client()
+	do := func(method, path string, form url.Values) *http.Response {
+		t.Helper()
+		var resp *http.Response
+		var err error
+		if method == http.MethodPost {
+			resp, err = c.PostForm(f.server.URL+path, form)
+		} else {
+			resp, err = c.Get(f.server.URL + path)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	if resp := do(http.MethodGet, "/admin/", nil); resp.Header.Get("Location") != "/admin/login" {
+		t.Errorf("redirect = %q", resp.Header.Get("Location"))
+	}
+	// A proxy that strips the prefix sends the bare path.
+	if code, _ := f.get(c, "/login"); code != http.StatusOK {
+		t.Errorf("stripped login page = %d", code)
+	}
+	code, body := f.get(c, "/admin/login")
+	if code != http.StatusOK || !strings.Contains(body, `href="/admin/static/app.css"`) || !strings.Contains(body, `action="/admin/login"`) {
+		t.Errorf("login page = %d: %s", code, body)
+	}
+	if resp := do(http.MethodGet, "/admin/static/app.css", nil); resp.StatusCode != http.StatusOK {
+		t.Errorf("stylesheet = %d", resp.StatusCode)
+	}
+
+	resp := do(http.MethodPost, "/admin/login", url.Values{"username": {"admin"}, "password": {"pw"}})
+	if resp.Header.Get("Location") != "/admin/" {
+		t.Errorf("after login = %q", resp.Header.Get("Location"))
+	}
+	if cookies := resp.Cookies(); len(cookies) != 1 || cookies[0].Path != "/admin" {
+		t.Errorf("cookies = %+v", cookies)
+	}
+
+	f.add("a.mkv")
+	_, page := f.get(c, "/admin/library")
+	m := csrfField.FindStringSubmatch(page)
+	if m == nil || !strings.Contains(page, `action="/admin/library/add"`) {
+		t.Fatalf("library page: %s", page)
+	}
+	resp = do(http.MethodPost, "/admin/library/add", url.Values{"csrf": {m[1]}, "path": {"a.mkv"}})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/admin/library" {
+		t.Errorf("form post = %d to %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }

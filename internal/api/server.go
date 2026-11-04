@@ -72,7 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/edge/poll", s.edgeOnly(s.edgePoll))
 	mux.HandleFunc("POST /v1/edge/ack", s.edgeOnly(s.edgeAck))
 	mux.HandleFunc("GET /v1/edge/files/{hash}", s.edgeOnly(s.edgeFile))
-	return s.authenticate(mux)
+	return config.StripPrefix(s.cfg.ControlBasePath(), s.authenticate(mux))
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {

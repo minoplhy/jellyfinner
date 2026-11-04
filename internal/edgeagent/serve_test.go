@@ -92,3 +92,32 @@ func TestFileServer(t *testing.T) {
 		t.Errorf("missing file: %s", resp.Status)
 	}
 }
+
+func TestFileServerUnderAPath(t *testing.T) {
+	dir := t.TempDir()
+	hash := strings.Repeat("a", 64)
+	if err := os.WriteFile(filepath.Join(dir, hash+".mp4"), []byte("video"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_000_000, 0)
+	srv := httptest.NewServer(&FileServer{Dir: dir, Key: "key", Now: func() time.Time { return now }})
+	defer srv.Close()
+	base := srv.URL + "/edge1"
+	for target, want := range map[string]int{
+		edge.SignURL(base, "key", hash, now.Add(time.Hour)): http.StatusOK,
+		base + "/health":                      http.StatusOK,
+		base + edge.FilePath(hash):            http.StatusForbidden,
+		base + "/e/zz.mp4":                    http.StatusNotFound,
+		base + "/e/" + hash + ".mp4/health":   http.StatusOK,
+		srv.URL + "/edge1/x/" + hash + ".mp4": http.StatusNotFound,
+	} {
+		resp, err := http.Get(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("%s: %s, want %d", target, resp.Status, want)
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -51,6 +52,7 @@ type Router struct {
 	store    *queue.Store
 	jellyfin Jellyfin
 	proxy    http.Handler
+	base     string // Jellyfin's Base URL, such as /jf
 	log      *log.Logger
 
 	mu    sync.Mutex
@@ -58,11 +60,35 @@ type Router struct {
 	items map[string]cached
 }
 
-// NewRouter returns a router in front of upstream.
+// NewRouter returns a router in front of upstream. A path in upstream is
+// Jellyfin's Base URL. Requests pass with their path unchanged, because
+// Jellyfin expects that prefix itself.
 func NewRouter(cfg *config.Config, store *queue.Store, jf Jellyfin, upstream *url.URL, logger *log.Logger) *Router {
-	proxy := httputil.NewSingleHostReverseProxy(upstream)
-	proxy.FlushInterval = -1
-	return &Router{cfg: cfg, store: store, jellyfin: jf, proxy: proxy, log: logger, users: map[string]cached{}, items: map[string]cached{}}
+	base, _ := config.BasePath(upstream.Path)
+	proxy := &httputil.ReverseProxy{
+		FlushInterval: -1,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme, pr.Out.URL.Host = upstream.Scheme, upstream.Host
+			// Rewrite drops forwarded headers. An outer proxy's must reach
+			// Jellyfin, which builds URLs from X-Forwarded-Proto, so they are
+			// kept and this hop only adds itself to X-Forwarded-For.
+			for _, h := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+				if v, ok := pr.In.Header[h]; ok {
+					pr.Out.Header[h] = v
+				}
+			}
+			if ip, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+				if prior := pr.Out.Header["X-Forwarded-For"]; len(prior) > 0 {
+					ip = strings.Join(prior, ", ") + ", " + ip
+				}
+				pr.Out.Header.Set("X-Forwarded-For", ip)
+			}
+			if _, ok := pr.Out.Header["User-Agent"]; !ok {
+				pr.Out.Header.Set("User-Agent", "")
+			}
+		},
+	}
+	return &Router{cfg: cfg, store: store, jellyfin: jf, proxy: proxy, base: base, log: logger, users: map[string]cached{}, items: map[string]cached{}}
 }
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +105,8 @@ func (rt *Router) redirectFor(r *http.Request) string {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return ""
 	}
-	m := streamPath.FindStringSubmatch(r.URL.Path)
+	// With or without Jellyfin's Base URL, so a proxy may strip it or not.
+	m := streamPath.FindStringSubmatch(config.TrimPrefix(r.URL.Path, rt.base))
 	if m == nil || !isStatic(r.URL.Query()) {
 		return ""
 	}

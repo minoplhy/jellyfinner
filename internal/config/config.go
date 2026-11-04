@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,8 +54,8 @@ type Config struct {
 	RemoteIncoming  string
 
 	ControlAddr string
-	// ControlURL is how nodes reach the control API. It is only printed, for
-	// pasting into a new node's settings.
+	// ControlURL is how nodes reach the control API. node add prints it, and
+	// any path in it is a prefix the control API also answers under.
 	ControlURL string
 	TLSCert    string
 	TLSKey     string
@@ -93,7 +94,9 @@ type Config struct {
 	RouterAddr   string
 
 	// WebAddr enables the admin UI. MetricsAddr enables /metrics.
+	// WebBasePath serves the UI under a path, such as /jellyfinner.
 	WebAddr     string
+	WebBasePath string
 	WebTLSCert  string
 	WebTLSKey   string
 	MetricsAddr string
@@ -200,6 +203,9 @@ func parse(get func(string) string) (*Config, error) {
 	if c.EdgeViewers, err = ParseEdgeViewers(get("EDGE_VIEWERS")); err != nil {
 		return nil, err
 	}
+	if c.WebBasePath, err = BasePath(get("WEB_BASE_PATH")); err != nil {
+		return nil, fmt.Errorf("WEB_BASE_PATH: %w", err)
+	}
 	dailyGB, err := integer(get("BACKFILL_DAILY_GB"), 200)
 	if err != nil {
 		return nil, fmt.Errorf("BACKFILL_DAILY_GB: %w", err)
@@ -252,7 +258,94 @@ func (c *Config) validate() error {
 	if nested(c.LibraryDir, c.OriginalsDir) || nested(c.OriginalsDir, c.LibraryDir) {
 		return errors.New("ORIGINALS_DIR and LIBRARY_DIR must not contain each other")
 	}
+	for _, u := range []struct{ key, value string }{{"CONTROL_URL", c.ControlURL}, {"JELLYFIN_URL", c.JellyfinURL}} {
+		if _, err := URLBasePath(u.value); err != nil {
+			return fmt.Errorf("%s: %w", u.key, err)
+		}
+	}
 	return nil
+}
+
+var basePathPattern = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)+$`)
+
+// BasePath reads a path prefix, such as "/jellyfinner". It always starts with a
+// slash and never ends with one, and "" means none.
+func BasePath(s string) (string, error) {
+	s = strings.TrimSuffix(s, "/")
+	if s == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(s, "/") {
+		s = "/" + s
+	}
+	if !basePathPattern.MatchString(s) {
+		return "", fmt.Errorf("path %q may only use letters, digits and . _ ~ - between slashes", s)
+	}
+	for _, seg := range strings.Split(s[1:], "/") {
+		if seg == "." || seg == ".." {
+			return "", fmt.Errorf("path %q must not contain . or ..", s)
+		}
+	}
+	return s, nil
+}
+
+// URLBasePath is the path prefix of a URL, "" when it has none.
+func URLBasePath(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	return BasePath(u.Path)
+}
+
+// ControlBasePath is the prefix of CONTROL_URL, which validate has checked.
+func (c *Config) ControlBasePath() string {
+	p, _ := URLBasePath(c.ControlURL)
+	return p
+}
+
+// TrimPrefix removes a path prefix when the path is under it, and otherwise
+// returns the path unchanged. That way a listener works whether or not a
+// reverse proxy strips the prefix. It matches only at a slash, so /jfx is
+// not under /jf.
+func TrimPrefix(path, prefix string) string {
+	if prefix == "" {
+		return path
+	}
+	if path == prefix {
+		return "/"
+	}
+	if rest, ok := strings.CutPrefix(path, prefix); ok && strings.HasPrefix(rest, "/") {
+		return rest
+	}
+	return path
+}
+
+// StripPrefix serves next with the prefix removed, as TrimPrefix does.
+func StripPrefix(prefix string, next http.Handler) http.Handler {
+	if prefix == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		trimmed := TrimPrefix(r.URL.Path, prefix)
+		if trimmed == r.URL.Path {
+			next.ServeHTTP(w, r)
+			return
+		}
+		r2 := new(http.Request)
+		*r2 = *r
+		u := *r.URL
+		u.Path = trimmed
+		u.RawPath = ""
+		if r.URL.RawPath != "" {
+			u.RawPath = TrimPrefix(r.URL.RawPath, prefix)
+		}
+		r2.URL = &u
+		next.ServeHTTP(w, r2)
+	})
 }
 
 // ParseEdgeViewers reads "username=node;...".

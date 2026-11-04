@@ -211,3 +211,20 @@ func TestProbeToleratesTrailingSlash(t *testing.T) {
 		t.Errorf("status = %+v, %v", st, err)
 	}
 }
+
+func TestProbeUnderAPath(t *testing.T) {
+	f := newFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/edge1/health" {
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := f.store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: srv.URL + "/edge1"}); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.probeNodes(context.Background())
+	if st, err := f.store.GetNodeStatus("edge1"); err != nil || !st.Healthy {
+		t.Errorf("status = %+v, %v", st, err)
+	}
+}

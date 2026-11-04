@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"jellyfinner/internal/config"
 	"jellyfinner/internal/jellyfin"
 	"jellyfinner/internal/orchestrator"
 	"jellyfinner/internal/queue"
@@ -63,6 +64,7 @@ type Server struct {
 	lastSeen func() map[string]time.Time
 	log      *log.Logger
 	pages    map[string]*template.Template
+	base     string // WEB_BASE_PATH, such as /jellyfinner
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -72,7 +74,7 @@ type Server struct {
 // New parses the templates. A broken template is a build mistake, so it panics.
 func New(svc *orchestrator.Service, auth Authenticator, lastSeen func() map[string]time.Time, logger *log.Logger) *Server {
 	s := &Server{
-		svc: svc, auth: auth, lastSeen: lastSeen, log: logger,
+		svc: svc, auth: auth, lastSeen: lastSeen, log: logger, base: svc.Cfg.WebBasePath,
 		pages: map[string]*template.Template{}, sessions: map[string]*session{}, logins: map[string]*attempts{},
 	}
 	funcs := template.FuncMap{
@@ -80,6 +82,7 @@ func New(svc *orchestrator.Service, auth Authenticator, lastSeen func() map[stri
 		"pct":  func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
 		"ago":  func(unix int64) string { return s.ago(time.Unix(unix, 0)) },
 		"agoT": s.ago,
+		"base": func() string { return s.base },
 	}
 	for _, page := range []string{"login", "dashboard", "queue", "job", "library", "confirm", "nodes"} {
 		s.pages[page] = template.Must(template.New("layout.html").Funcs(funcs).
@@ -130,7 +133,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /nodes/{node}/remove", s.protected(s.nodeRemove))
 	mux.HandleFunc("POST /library/reencode", s.protected(s.reencodeConfirm))
 	mux.HandleFunc("POST /library/reencode/confirm", s.protected(s.reencode))
-	return headers(mux)
+	return headers(config.StripPrefix(s.base, mux))
+}
+
+// redirect sends the browser to a page of the UI, under its base path.
+func (s *Server) redirect(w http.ResponseWriter, r *http.Request, page string) {
+	http.Redirect(w, r, s.base+page, http.StatusSeeOther)
+}
+
+// cookiePath limits the session to the UI's own path.
+func (s *Server) cookiePath() string {
+	if s.base == "" {
+		return "/"
+	}
+	return s.base
 }
 
 func headers(next http.Handler) http.Handler {
@@ -182,7 +198,7 @@ func (s *Server) protected(next func(http.ResponseWriter, *http.Request, *sessio
 				http.Error(w, "login required", http.StatusUnauthorized)
 				return
 			}
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			s.redirect(w, r, "/login")
 			return
 		}
 		if r.Method != http.MethodGet {
@@ -270,7 +286,7 @@ func (s *Server) flash(sess *session, message string) {
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 	if s.currentSession(r) != nil {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		s.redirect(w, r, "/")
 		return
 	}
 	s.render(w, nil, "login", "Sign in", "")
@@ -327,11 +343,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.sessions[id] = &session{user: username, csrf: csrf, expires: s.now().Add(sessionLife)}
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: id, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		Name: cookieName, Value: id, Path: s.cookiePath(), HttpOnly: true, SameSite: http.SameSiteStrictMode,
 		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 		MaxAge: int(sessionLife.Seconds()),
 	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	s.redirect(w, r, "/")
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request, _ *session) {
@@ -340,8 +356,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, _ *session) {
 		delete(s.sessions, cookie.Value)
 		s.mu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Path: s.cookiePath(), MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	s.redirect(w, r, "/login")
 }
 
 type nodeRow struct {
@@ -461,7 +477,7 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, sess *session
 	if err != nil {
 		s.flash(sess, err.Error())
 	}
-	http.Redirect(w, r, "/queue", http.StatusSeeOther)
+	s.redirect(w, r, "/queue")
 }
 
 type libraryData struct {
@@ -498,7 +514,7 @@ func (s *Server) libraryCache(w http.ResponseWriter, r *http.Request, sess *sess
 		done++
 	}
 	s.flash(sess, summary("sent to "+node, done, errs))
-	http.Redirect(w, r, "/library", http.StatusSeeOther)
+	s.redirect(w, r, "/library")
 }
 
 type nodesData struct {
@@ -520,7 +536,7 @@ func (s *Server) nodeRemove(w http.ResponseWriter, r *http.Request, sess *sessio
 	if err != nil {
 		s.flash(sess, err.Error())
 	}
-	http.Redirect(w, r, "/nodes", http.StatusSeeOther)
+	s.redirect(w, r, "/nodes")
 }
 
 func (s *Server) libraryAdd(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -534,7 +550,7 @@ func (s *Server) libraryAdd(w http.ResponseWriter, r *http.Request, sess *sessio
 		done++
 	}
 	s.flash(sess, summary("queued", done, errs))
-	http.Redirect(w, r, "/library", http.StatusSeeOther)
+	s.redirect(w, r, "/library")
 }
 
 func summary(verb string, done int, errs []string) string {
@@ -559,7 +575,7 @@ func (s *Server) reencodeConfirm(w http.ResponseWriter, r *http.Request, sess *s
 	}
 	if len(known) == 0 {
 		s.flash(sess, "Select at least one title.")
-		http.Redirect(w, r, "/library", http.StatusSeeOther)
+		s.redirect(w, r, "/library")
 		return
 	}
 	s.render(w, sess, "confirm", "Confirm re-encode", confirmData{CSRF: sess.csrf, Paths: known, Size: size})
@@ -569,7 +585,7 @@ func (s *Server) reencode(w http.ResponseWriter, r *http.Request, sess *session)
 	reason := strings.TrimSpace(r.PostForm.Get("reason"))
 	if reason == "" {
 		s.flash(sess, "A reason is required, so repeat problems are visible later.")
-		http.Redirect(w, r, "/library", http.StatusSeeOther)
+		s.redirect(w, r, "/library")
 		return
 	}
 	opts := orchestrator.ReencodeOptions{
@@ -587,5 +603,5 @@ func (s *Server) reencode(w http.ResponseWriter, r *http.Request, sess *session)
 		done++
 	}
 	s.flash(sess, summary("re-encodes ordered", done, errs))
-	http.Redirect(w, r, "/queue", http.StatusSeeOther)
+	s.redirect(w, r, "/queue")
 }

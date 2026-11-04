@@ -15,7 +15,7 @@
       <td>{{size .Size}}</td>
       <td class="muted">{{if .LastPlayed}}{{ago .LastPlayed}}{{else}}never{{end}}</td>
       <td>{{if ne .State "deleting"}}
-        <form method="post" action="/nodes/{{$node}}/remove">
+        <form method="post" action="{{base}}/nodes/{{$node}}/remove">
           <input type="hidden" name="csrf" value="{{$csrf}}">
           <input type="hidden" name="output" value="{{.Output}}">
           <label class="check"><input type="checkbox" name="force"> even if recently played</label>

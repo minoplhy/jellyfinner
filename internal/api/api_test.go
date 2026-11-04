@@ -542,3 +542,27 @@ func TestFailedPullIsReported(t *testing.T) {
 		t.Errorf("reported = %v", f.edgeFailed)
 	}
 }
+
+func TestControlURLWithPath(t *testing.T) {
+	f := newFixture(t, allNodes())
+	f.cfg.ControlURL = "https://control.example.com/jf"
+	srv := httptest.NewServer(New(f.cfg, f.store, Hooks{}, log.New(io.Discard, "", 0)).Handler())
+	t.Cleanup(srv.Close)
+	// Behind a proxy that keeps the prefix, and behind one that strips it.
+	for _, base := range []string{srv.URL + "/jf", srv.URL} {
+		client, err := control.NewClient(base, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if me, err := client.WhoAmI(context.Background()); err != nil || me.Name != "worker1" {
+			t.Errorf("%s: %+v, %v", base, me, err)
+		}
+	}
+	client, err := control.NewClient(srv.URL+"/jfx", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.WhoAmI(context.Background()); err == nil {
+		t.Error("a neighbouring path is not under the prefix")
+	}
+}

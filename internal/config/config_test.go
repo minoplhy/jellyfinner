@@ -182,3 +182,43 @@ func TestLoadEnvFile(t *testing.T) {
 		t.Errorf("the environment must override the file: %+v, %v", c, err)
 	}
 }
+
+func TestTrimPrefix(t *testing.T) {
+	for _, c := range []struct{ path, prefix, want string }{
+		{"/v1/x", "", "/v1/x"},
+		{"/jf/v1/x", "/jf", "/v1/x"},
+		{"/jf", "/jf", "/"},
+		{"/jfx/v1", "/jf", "/jfx/v1"},
+		{"/v1/x", "/jf", "/v1/x"},
+	} {
+		if got := TrimPrefix(c.path, c.prefix); got != c.want {
+			t.Errorf("TrimPrefix(%q, %q) = %q, want %q", c.path, c.prefix, got, c.want)
+		}
+	}
+}
+
+func TestBasePath(t *testing.T) {
+	for in, want := range map[string]string{"": "", "/": "", "/admin": "/admin", "/admin/": "/admin", "admin": "/admin", "/a/b": "/a/b"} {
+		if got, err := BasePath(in); err != nil || got != want {
+			t.Errorf("BasePath(%q) = %q, %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{"/a/../b", "/a?x", "/a#x", "/a//b", "/a b"} {
+		if _, err := BasePath(bad); err == nil {
+			t.Errorf("BasePath(%q) accepted", bad)
+		}
+	}
+}
+
+func TestWebBasePathSetting(t *testing.T) {
+	env := base()
+	env["WEB_BASE_PATH"] = "/jellyfinner/"
+	c, err := parseMap(env)
+	if err != nil || c.WebBasePath != "/jellyfinner" {
+		t.Fatalf("WebBasePath = %+v, %v", c, err)
+	}
+	env["WEB_BASE_PATH"] = "/x/../y"
+	if _, err := parseMap(env); err == nil {
+		t.Error("a bad WEB_BASE_PATH must be refused")
+	}
+}

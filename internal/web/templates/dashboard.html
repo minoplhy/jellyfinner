@@ -1,6 +1,6 @@
 {{define "content"}}
 <h1>Dashboard</h1>
-<div hx-get="/fragments/dashboard" hx-trigger="every 3s" hx-swap="innerHTML">{{template "status" .Content}}</div>
+<div hx-get="{{base}}/fragments/dashboard" hx-trigger="every 3s" hx-swap="innerHTML">{{template "status" .Content}}</div>
 {{end}}
 
 {{define "status"}}
@@ -27,7 +27,7 @@
   <table>
     <tr><th>Title</th><th>Stage</th><th>Progress</th><th>Node</th></tr>
     {{range .Active}}
-    <tr><td class="path"><a href="/jobs/{{.ID}}">{{.Path}}</a></td><td>{{.Stage}}</td><td>{{pct .Fraction}}</td><td>{{.Node}}</td></tr>
+    <tr><td class="path"><a href="{{base}}/jobs/{{.ID}}">{{.Path}}</a></td><td>{{.Stage}}</td><td>{{pct .Fraction}}</td><td>{{.Node}}</td></tr>
     {{else}}<tr><td class="muted">Nothing is running.</td></tr>{{end}}
   </table>
 </div>

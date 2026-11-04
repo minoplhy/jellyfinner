@@ -19,15 +19,20 @@ type FileServer struct {
 	Now func() time.Time
 }
 
+// ServeHTTP answers under any path prefix, such as /edge1, so a reverse proxy
+// may strip it or not. The prefix grants nothing: the signature covers the
+// canonical /e/<hash>.mp4, and the file is chosen by a checked hash alone.
 func (s *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/health" {
+	if r.URL.Path == "/health" || strings.HasSuffix(r.URL.Path, "/health") {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok\n"))
 		return
 	}
-	hash, ok := strings.CutPrefix(r.URL.Path, "/e/")
+	var hash string
+	i := strings.LastIndex(r.URL.Path, "/e/")
+	ok := i >= 0
 	if ok {
-		hash, ok = strings.CutSuffix(hash, ".mp4")
+		hash, ok = strings.CutSuffix(r.URL.Path[i+len("/e/"):], ".mp4")
 	}
 	if !ok || !edge.ValidHash(hash) {
 		http.NotFound(w, r)
@@ -42,7 +47,7 @@ func (s *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		now = s.Now
 	}
 	query := r.URL.Query()
-	err := edge.CheckSignedURL(s.Key, r.URL.Path, query.Get("md5"), query.Get("expires"), now())
+	err := edge.CheckSignedURL(s.Key, edge.FilePath(hash), query.Get("md5"), query.Get("expires"), now())
 	if errors.Is(err, edge.ErrExpired) {
 		http.Error(w, "expired", http.StatusGone)
 		return

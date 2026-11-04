@@ -4,13 +4,13 @@
 <div class="panel">
   <p>This pulls <b>{{size .Size}}</b> of source data to the encoding node again, for {{len .Paths}} title(s). The current encode stays live until the new one is verified.</p>
   <ul>{{range .Paths}}<li class="path">{{.}}</li>{{end}}</ul>
-  <form method="post" action="/library/reencode/confirm">
+  <form method="post" action="{{base}}/library/reencode/confirm">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     {{range .Paths}}<input type="hidden" name="path" value="{{.}}">{{end}}
     <label>What is wrong? <input type="text" name="reason" required autofocus></label>
     <label class="check"><input type="checkbox" name="force_encode"> Force encode, no stream copy</label>
     <label class="check"><input type="checkbox" name="software"> Software encoder</label>
-    <p><button class="primary">Order re-encode</button> <a href="/library">Back</a></p>
+    <p><button class="primary">Order re-encode</button> <a href="{{base}}/library">Back</a></p>
   </form>
 </div>
 {{end}}
