@@ -5,6 +5,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,11 +112,17 @@ func NewClient(baseURL, token string) (*Client, error) {
 
 // transferTransport moves whole files, so it has no overall timeout. It keeps
 // to HTTP/1.1, because HTTP/2 would put every parallel stream on one TCP
-// connection, which is the limit parallel streams exist to get around.
+// connection, which is the limit parallel streams exist to get around. It
+// names HTTP/1.1 in the TLS handshake: offered nothing, a server with HTTP/2
+// enabled, such as nginx with http2 on, may answer in HTTP/2 anyway.
 func transferTransport() *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.Protocols = new(http.Protocols)
 	t.Protocols.SetHTTP1(true)
+	if t.TLSClientConfig == nil {
+		t.TLSClientConfig = &tls.Config{}
+	}
+	t.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	t.MaxIdleConnsPerHost = 32
 	t.ReadBufferSize = 1 << 20
 	t.WriteBufferSize = 1 << 20

@@ -128,6 +128,8 @@ Subdomains need nothing extra, and paths such as `https://example.com/jellyfinne
 | Jellyfin and the router | Set Jellyfin's Base URL under Dashboard, Networking, and include it in `JELLYFIN_URL`, such as `http://host.docker.internal:8096/jellyfin`. Proxy that path to the router or to Jellyfin |
 | Edge node | Add it with `--url https://example.com/edge1`. `edge-serve` needs no setting |
 
+HTTP/2 on your proxy is fine, such as nginx with `http2 on;`. File transfers use HTTP/1.1 on purpose, so parallel streams get their own connections, and every other request may use HTTP/2.
+
 The control API and the admin UI need different paths, because each is its own listener.
 
 The image trusts `X-Forwarded-For` from private addresses, so allowlists and failed-login limits see real clients behind a proxy. This is safe while ports stay on `127.0.0.1`. **If you publish the control API on a public address, set `TRUSTED_PROXIES` to your proxy's address, or to an empty value.** Otherwise, on a runtime that hides client addresses, an outsider could forge the header to get around those limits.

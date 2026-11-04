@@ -7,6 +7,7 @@ Whichever proxy you use, it must:
 - Keep the query string and the `/e/<hash>.mp4` part of the path unchanged, because the signature covers them.
 - Under a path such as `https://example.com/edge1`, it may strip that prefix or keep it. `edge-agent serve` accepts both, so add the node with `--url https://example.com/edge1`.
 - Pass `Range` requests through, and not cache or buffer the video.
+- HTTP/2 may stay on. Edge pulls and worker transfers ask for HTTP/1.1, so parallel streams get their own connections.
 
 If you have no proxy, uncomment the `caddy` block in `compose.edge.yml` instead.
 
