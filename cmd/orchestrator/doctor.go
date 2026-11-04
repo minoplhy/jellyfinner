@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"time"
 
@@ -23,6 +25,9 @@ func runDoctor(envFile string) error {
 		return r.Done()
 	}
 	r.Check("originals readable at "+cfg.OriginalsDir, doctor.Readable(cfg.OriginalsDir))
+	if entries, err := os.ReadDir(cfg.OriginalsDir); err == nil && len(entries) == 0 {
+		r.Note("originals folder is empty: check the mount")
+	}
 	r.Check("library writable at "+cfg.LibraryDir, doctor.Writable(cfg.LibraryDir))
 	r.Check("incoming writable at "+cfg.IncomingDir, doctor.Writable(cfg.IncomingDir))
 	r.Check("library and incoming allow an atomic publish", cfg.CheckFilesystems())
@@ -44,11 +49,28 @@ func runDoctor(envFile string) error {
 		viewerNodes(r, cfg, nodes)
 	}
 
+	if webhookUnreachable(cfg) {
+		r.Note("WEBHOOK_ADDR is " + cfg.WebhookAddr + ", which only this container can reach, so Jellyfin cannot report plays")
+	}
 	if cfg.ControlURL == "" {
 		r.Note("CONTROL_URL is not set, so node add cannot print the address nodes need")
 	}
 	checkJellyfin(r, cfg)
 	return r.Done()
+}
+
+// webhookUnreachable spots a manual-mode listener on the container's own
+// loopback. On a host install, a Jellyfin beside it can still reach that.
+func webhookUnreachable(cfg *config.Config) bool {
+	if cfg.Mode != config.ModeManual || os.Getenv("JELLYFINNER_IN_CONTAINER") != "1" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(cfg.WebhookAddr)
+	if err != nil {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
 }
 
 func viewerNodes(r *doctor.Report, cfg *config.Config, nodes []queue.Node) {

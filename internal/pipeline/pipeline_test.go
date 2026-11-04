@@ -329,3 +329,29 @@ func TestRunCancelled(t *testing.T) {
 		t.Errorf("scratch not cleared after cancel: %v", entries)
 	}
 }
+
+func TestRunShutdownKeepsPulledSource(t *testing.T) {
+	requireTools(t)
+	source := filepath.Join(t.TempDir(), "source.mkv")
+	makeSource(t, source)
+	cfg := testConfig(t, encode.BackendSoftware)
+	j := testJob(t, source)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(ErrShutdown)
+	if _, err := Run(ctx, cfg, j, &bytes.Buffer{}, nil); err == nil {
+		t.Fatal("want an error")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Scratch, j.ID)); err != nil {
+		t.Errorf("a restart should find its scratch again: %v", err)
+	}
+}
+
+func TestCheckScratchCountsHeldSource(t *testing.T) {
+	const huge = 1 << 62
+	if err := checkScratch(t.TempDir(), huge, 0); err == nil {
+		t.Error("an impossible size must fail")
+	}
+	if err := checkScratch(t.TempDir(), 100, 100); err != nil {
+		t.Errorf("a held source needs no extra room for itself: %v", err)
+	}
+}

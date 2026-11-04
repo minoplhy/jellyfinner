@@ -198,8 +198,10 @@ func (w *worker) runJob(ctx context.Context, claim *control.ClaimResponse) {
 	log.Printf("job %s: %s", id, claim.Job.Source)
 	pruneScratch(w.cfg.Scratch, id)
 
-	jobCtx, cancel := context.WithCancelCause(ctx)
+	// Apart from ctx, so a shutdown can be told from a cancelled job.
+	jobCtx, cancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer cancel(nil)
+	defer context.AfterFunc(ctx, func() { cancel(pipeline.ErrShutdown) })()
 
 	tail := &tailWriter{limit: logTailBytes}
 	cfg := w.cfg
@@ -229,18 +231,30 @@ func (w *worker) runJob(ctx context.Context, claim *control.ClaimResponse) {
 		log.Printf("job %s: lease lost, dropping the result", id)
 		return
 	}
-	req := control.FinishRequest{Lease: claim.Lease, Log: tail.String()}
-	if err != nil {
-		req.Error = err.Error()
-		log.Printf("job %s failed: %v", id, err)
-	} else {
-		data, merr := json.Marshal(manifest)
-		if merr != nil {
-			req.Error = merr.Error()
+	req := finishRequest(claim.Lease, tail.String(), manifest, err, errors.Is(context.Cause(jobCtx), pipeline.ErrShutdown))
+	if req.Error != "" {
+		log.Printf("job %s failed: %s", id, req.Error)
+	}
+	w.report(reportCtx, id, req)
+}
+
+// finishRequest reports a job's outcome. A shutdown that stopped the job is
+// not its failure, so the job goes back without using an attempt.
+func finishRequest(lease, tail string, manifest *pipeline.Manifest, runErr error, shutdown bool) control.FinishRequest {
+	req := control.FinishRequest{Lease: lease, Log: tail}
+	switch {
+	case runErr != nil && shutdown:
+		req.Released = true
+	case runErr != nil:
+		req.Error = runErr.Error()
+	default:
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			req.Error = err.Error()
 		}
 		req.Manifest = data
 	}
-	w.report(reportCtx, id, req)
+	return req
 }
 
 func (w *worker) keepAlive(ctx context.Context, id, lease string, status *progress, stop <-chan struct{}, cancel context.CancelCauseFunc) {

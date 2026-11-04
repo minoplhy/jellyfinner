@@ -137,6 +137,36 @@ func (s *Service) reap(ctx context.Context) {
 	for _, j := range failed {
 		s.JobFailed(ctx, j)
 	}
+	s.clearAbandonedUploads()
+}
+
+// clearAbandonedUploads removes what failed and cancelled jobs left in
+// INCOMING_DIR. Only publishing clears a job's folder otherwise. A folder with
+// no job stays, because nothing proves what it is.
+func (s *Service) clearAbandonedUploads() {
+	entries, err := os.ReadDir(s.Cfg.IncomingDir)
+	if err != nil {
+		s.Log.Printf("list incoming: %v", err)
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		j, err := s.Store.Get(e.Name())
+		if err != nil {
+			if !errors.Is(err, queue.ErrNotFound) {
+				s.Log.Printf("incoming %s: %v", e.Name(), err)
+			}
+			continue
+		}
+		if j.State != queue.StateFailed && j.State != queue.StateCancelled {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(s.Cfg.IncomingDir, e.Name())); err != nil {
+			s.Log.Printf("clear incoming %s: %v", e.Name(), err)
+		}
+	}
 }
 
 // JobFailed reports a job that has run out of attempts.
@@ -195,14 +225,25 @@ func (s *Service) ScanOnce(ctx context.Context) error {
 			return err
 		}
 	}
+	// Replaced files are new work, but a restore that changes every mtime looks
+	// the same, and must not spend the whole library's traffic at once.
+	held := s.massive(len(changes.Changed), len(tracked))
 	for _, p := range changes.Changed {
 		f := files[p]
 		if err := s.Store.UpdateSource(p, f.Size, f.MtimeNS); err != nil {
 			return err
 		}
+		if held {
+			if err := s.Store.SetBacklog(p); err != nil {
+				return err
+			}
+		}
 		if _, err := s.Store.CancelForPath(p, ""); err != nil {
 			return err
 		}
+	}
+	if held {
+		s.send(ctx, fmt.Sprintf("Changes held: %d of %d sources changed at once, so they wait in the backlog. Check the originals disk. Backfill encodes them within its budget, or use queue add.", len(changes.Changed), len(tracked)))
 	}
 	for _, p := range changes.Returned {
 		if err := s.Store.SetMissing(p, 0); err != nil {
@@ -212,7 +253,12 @@ func (s *Service) ScanOnce(ctx context.Context) error {
 	if err := s.handleMissing(ctx, changes.Missing, len(tracked)); err != nil {
 		return err
 	}
-	if firstScan {
+	// An empty folder can be a wrong mount, so the first scan is the first that
+	// finds files. Otherwise fixing the mount would queue the whole library.
+	if firstScan && len(files) == 0 {
+		s.Log.Printf("first scan: %s is empty, waiting for files before recording the library", s.Cfg.OriginalsDir)
+	}
+	if firstScan && len(files) > 0 {
 		if err := s.Store.SetMeta("first_scan_done", "1"); err != nil {
 			return err
 		}
@@ -254,7 +300,7 @@ func (s *Service) handleMissing(ctx context.Context, missing []*queue.Source, tr
 		}
 	}
 
-	massive := len(missing) >= massDeleteMin && len(missing)*100 > s.Cfg.MassDeletePercent*tracked
+	massive := s.massive(len(missing), tracked)
 	s.mu.Lock()
 	wasPaused := s.deletePaused
 	s.deletePaused = massive
@@ -278,17 +324,46 @@ func (s *Service) handleMissing(ctx context.Context, missing []*queue.Source, tr
 	return nil
 }
 
+// massive reports whether a change touches too much of the library at once to
+// be ordinary use.
+func (s *Service) massive(changed, tracked int) bool {
+	return changed >= massDeleteMin && changed*100 > s.Cfg.MassDeletePercent*tracked
+}
+
 func (s *Service) removeSource(src *queue.Source) error {
 	if _, err := s.Store.CancelForPath(src.Path, ""); err != nil {
 		return err
 	}
-	if err := s.withdrawPlacements(OutputPath(src.Path)); err != nil {
+	shared, err := s.outputOwnedByAnother(src)
+	if err != nil {
 		return err
 	}
-	if err := s.removeOutput(OutputPath(src.Path)); err != nil {
-		return err
+	if !shared {
+		if err := s.withdrawPlacements(OutputPath(src.Path)); err != nil {
+			return err
+		}
+		if err := s.removeOutput(OutputPath(src.Path)); err != nil {
+			return err
+		}
 	}
 	return s.Store.DeleteSource(src.Path)
+}
+
+// outputOwnedByAnother finds a source that shares this one's output and has
+// the better claim to it, as x.mkv and x.avi both produce x.mp4. If neither was
+// encoded, what is there is a stub, which the other source still needs.
+func (s *Service) outputOwnedByAnother(src *queue.Source) (bool, error) {
+	sources, err := s.Store.Sources()
+	if err != nil {
+		return false, err
+	}
+	for _, other := range sources {
+		if other.Path != src.Path && OutputPath(other.Path) == OutputPath(src.Path) &&
+			(other.EncodedSize >= 0 || src.EncodedSize < 0) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *Service) removeStub(outputPath string) error {
@@ -341,6 +416,10 @@ func (s *Service) queueStable() error {
 				continue
 			}
 		} else if src.Backlog {
+			continue
+		}
+		// Manual mode has no backfill, so held changes wait for queue add.
+		if src.Backlog && src.EncodedSize >= 0 {
 			continue
 		}
 		if _, err := s.Store.Enqueue(s.newJob(src, queue.PriorityNew)); err != nil {

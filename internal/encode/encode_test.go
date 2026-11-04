@@ -306,3 +306,41 @@ func TestCheckOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanCleansSubtitleLanguages(t *testing.T) {
+	sub := func(index int, lang string) Stream {
+		return Stream{Index: index, CodecType: "subtitle", CodecName: "subrip", Tags: map[string]string{"language": lang}}
+	}
+	p := probeOf(h264(), aac(), sub(2, "pt-BR"), sub(3, "../x"), sub(4, "a b"), sub(5, "9"))
+	plan, err := NewPlan(p, DefaultProfile(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pt-BR", "und", "und", "und"}
+	if len(plan.Subs) != len(want) {
+		t.Fatalf("subs = %+v", plan.Subs)
+	}
+	for i, s := range plan.Subs {
+		if s.Lang != want[i] {
+			t.Errorf("sub %d lang = %q, want %q", i, s.Lang, want[i])
+		}
+	}
+}
+
+func TestIsSidecar(t *testing.T) {
+	for name, want := range map[string]bool{
+		"a.en.srt":      true,
+		"a.pt-BR.1.ass": true,
+		"a.und.2.srt":   true,
+		"a.mp4":         false,
+		"b.en.srt":      false,
+		"a.2020.srt":    false,
+		"a.en.vtt":      false,
+		"a.en/x.srt":    false,
+		"a.srt":         false,
+	} {
+		if got := IsSidecar("a", name); got != want {
+			t.Errorf("IsSidecar(%q) = %v", name, got)
+		}
+	}
+}

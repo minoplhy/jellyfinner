@@ -101,6 +101,7 @@ Everything runs on a normal bridge network named `jellyfinner`, and ports are pu
 |---|---|
 | `8200` | Control API, for workers and edge nodes |
 | `8202` | Admin UI |
+| `8201` | Playback events from Jellyfin, in manual mode. Commented out by default |
 | `8204` | Router, if enabled |
 | `8205` | `edge-serve`, on an edge node |
 
@@ -129,6 +130,25 @@ Uncomment these blocks in the file.
 | `jellyfin` | Orchestrator | Runs Jellyfin, if you do not have one already |
 | `ENCODER`, `devices`, `group_add` | Worker | Encodes with a VAAPI GPU |
 | `TRANSFER`, the `rclone` volume | Worker | Transfers with rclone over SFTP, for the speed test in [../first-run.md](../first-run.md) |
+
+## Manual mode
+
+Manual mode encodes a title when someone presses play on its stub, so Jellyfin must be able to tell the orchestrator. Set these in `compose.orchestrator.yml` before the first start:
+
+- `ENCODE_MODE: manual`
+- `JELLYFIN_TOKEN`, which manual mode requires
+- `WEBHOOK_TOKEN`, at least 32 characters, such as the output of `openssl rand -hex 32`
+
+Then install the Webhook plugin in Jellyfin and add a Generic destination:
+
+| Setting | Value |
+|---|---|
+| Webhook URL | `http://orchestrator:8201/webhook/jellyfin` for Jellyfin on the `jellyfinner` network. For Jellyfin on the host, uncomment port `8201` and use `http://127.0.0.1:8201/webhook/jellyfin` |
+| Notification type | Playback Start |
+| Template | The contents of [../jellyfin-webhook.json](../jellyfin-webhook.json) |
+| Header | `X-Webhook-Token`, with your `WEBHOOK_TOKEN` |
+
+Keep the port on `127.0.0.1` or a private address. To change the mode of a running deployment, use `orchestrator switch-mode`, with `serve` stopped.
 
 ## Images and updates
 

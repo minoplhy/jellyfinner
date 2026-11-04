@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"jellyfinner/internal/edgerouter"
@@ -141,7 +142,7 @@ func (s *Service) refreshPlacements(output string, video pipeline.File) error {
 func (s *Service) probeNodes(ctx context.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	for _, n := range s.Store.EdgeNodes() {
-		healthy := probe(ctx, client, n.URL+"/health")
+		healthy := probe(ctx, client, strings.TrimSuffix(n.URL, "/")+"/health")
 		if err := s.Store.SetNodeHealth(n.Name, healthy); err != nil {
 			s.Log.Printf("node health %s: %v", n.Name, err)
 		}
@@ -159,6 +160,12 @@ func probe(ctx context.Context, client *http.Client, url string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// EdgeCopyFailed tells the operator, because nothing retries on its own: a node
+// that keeps failing must not keep pulling.
+func (s *Service) EdgeCopyFailed(ctx context.Context, node, sha256, reason string) {
+	s.send(ctx, fmt.Sprintf("Edge copy failed on %s: %s (file %.12s). Viewers stay on the origin until it is pinned again.", node, reason, sha256))
 }
 
 // NodeRow is one node in the UI.

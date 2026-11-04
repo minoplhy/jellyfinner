@@ -188,7 +188,7 @@ func (a *Agent) pull(ctx context.Context, order control.EdgeOrder) error {
 		default:
 			return fmt.Errorf("download: %s", resp.Status)
 		}
-		// Refuse to accept more than the order said, whatever B sends.
+		// Refuse to accept more than the order said, whatever the orchestrator sends.
 		body := io.LimitReader(resp.Body, order.Size-offset+1)
 		if _, err := io.Copy(io.MultiWriter(f, h), a.throttle(ctx, body)); err != nil {
 			return err

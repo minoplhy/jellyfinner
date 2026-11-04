@@ -803,3 +803,241 @@ func TestLeaseExpiryNotifiesFinalFailure(t *testing.T) {
 		t.Error("no failure notification")
 	}
 }
+
+func TestEmptyFirstScanStillTreatsLibraryAsBacklog(t *testing.T) {
+	f := newFixture(t)
+	// A wrong mount shows an empty folder, and fixing it reveals the library.
+	f.scan()
+	f.write("Movies/A/A.mkv", "a")
+	f.write("Movies/B/B.mkv", "b")
+	f.scan()
+	f.advance(time.Hour)
+	f.scan()
+	if jobs := f.jobs(); len(jobs) != 0 {
+		t.Errorf("the existing library must not queue itself: %+v", jobs)
+	}
+	src, err := f.store.Source("Movies/A/A.mkv")
+	if err != nil || !src.Backlog {
+		t.Errorf("source = %+v, %v", src, err)
+	}
+}
+
+func TestDeletingSkippedDuplicateKeepsOutput(t *testing.T) {
+	f := newFixture(t)
+	f.settled()
+	f.write("a.avi", "avi")
+	f.write("a.mkv", "mkv")
+	f.finishTitle("a.avi", "video")
+
+	if err := os.Remove(filepath.Join(f.cfg.OriginalsDir, "a.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	f.scan()
+	f.advance(2 * time.Hour)
+	f.scan()
+	if _, err := f.store.Source("a.mkv"); err == nil {
+		t.Error("the deleted source is still tracked")
+	}
+	if _, ok := f.inLibrary("a.mp4"); !ok {
+		t.Error("a.avi's output went with the source that never produced it")
+	}
+}
+
+func TestDeletingOnlySourceStillRemovesOutput(t *testing.T) {
+	f := newFixture(t)
+	f.settled()
+	f.write("a.avi", "avi")
+	f.write("a.mkv", "mkv")
+	f.finishTitle("a.avi", "video")
+
+	if err := os.Remove(filepath.Join(f.cfg.OriginalsDir, "a.avi")); err != nil {
+		t.Fatal(err)
+	}
+	f.scan()
+	f.advance(2 * time.Hour)
+	f.scan()
+	if _, ok := f.inLibrary("a.mp4"); ok {
+		t.Error("deleting the encoded source must remove its output")
+	}
+}
+
+func encodeEight(t *testing.T, f *fixture) {
+	t.Helper()
+	f.settled()
+	for i := range 8 {
+		f.write(fmt.Sprintf("t%d.mkv", i), fmt.Sprint(i))
+	}
+	f.stabilise()
+	for range 8 {
+		j := f.claim()
+		f.upload(j, map[string]string{filepath.Base(j.OutputPath): "v"})
+		f.complete(j)
+	}
+	f.svc.PublishPending(context.Background())
+}
+
+func TestMassChangeWaitsInBacklog(t *testing.T) {
+	f := newFixture(t)
+	encodeEight(t, f)
+
+	// A restore that changes every mtime looks like eight replaced files.
+	for i := range 8 {
+		f.write(fmt.Sprintf("t%d.mkv", i), "restored")
+	}
+	f.stabilise()
+	if j := f.queued("t0.mkv"); j != nil {
+		t.Errorf("a mass change must not skip the budget: %+v", j)
+	}
+	if src, err := f.store.Source("t0.mkv"); err != nil || !src.Backlog {
+		t.Errorf("source = %+v, %v", src, err)
+	}
+	if !f.notify.has("Changes held") {
+		t.Error("operator not told")
+	}
+}
+
+func TestSmallChangeStillQueues(t *testing.T) {
+	f := newFixture(t)
+	encodeEight(t, f)
+
+	f.write("t0.mkv", "replaced")
+	f.stabilise()
+	if f.queued("t0.mkv") == nil {
+		t.Error("a replaced file should queue")
+	}
+}
+
+func TestReapClearsAbandonedUploads(t *testing.T) {
+	f := newFixture(t)
+	f.settled()
+	f.write("a.mkv", "one")
+	f.write("b.mkv", "two")
+	f.stabilise()
+	cancelled, running := f.claim(), f.claim()
+	if err := f.store.Cancel(cancelled.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range []*queue.Job{cancelled, running} {
+		if err := os.MkdirAll(filepath.Join(f.cfg.IncomingDir, j.ID), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stub := filepath.Join(f.cfg.IncomingDir, StubName)
+	if err := os.WriteFile(stub, nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	f.svc.reap(context.Background())
+	if _, err := os.Stat(filepath.Join(f.cfg.IncomingDir, cancelled.ID)); !os.IsNotExist(err) {
+		t.Errorf("cancelled upload still there: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.cfg.IncomingDir, running.ID)); err != nil {
+		t.Errorf("running upload removed: %v", err)
+	}
+	if _, err := os.Stat(stub); err != nil {
+		t.Errorf("master stub removed: %v", err)
+	}
+}
+
+func TestPublishRefusesNamesOutsideTheTitle(t *testing.T) {
+	f := newFixture(t)
+	f.settled()
+	f.write("Show/E01.mkv", "one")
+	f.write("Show/E02.mkv", "two")
+	f.stabilise()
+	f.claim()
+	second := f.claim()
+	if err := os.MkdirAll(filepath.Join(f.cfg.LibraryDir, "Show"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	neighbour := "Show/E01.mp4"
+	if err := os.WriteFile(filepath.Join(f.cfg.LibraryDir, neighbour), []byte("real"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	f.upload(second, map[string]string{"E02.mp4": "v", "E01.mp4": "planted"})
+	f.complete(second)
+	f.svc.PublishPending(context.Background())
+	if got, _ := f.inLibrary(neighbour); got != "real" {
+		t.Errorf("a worker replaced another title: %q", got)
+	}
+	if _, ok := f.inLibrary("Show/E02.mp4"); ok {
+		t.Error("the job should not publish")
+	}
+}
+
+func TestRegionalSidecarsFollowTheTitle(t *testing.T) {
+	f := newFixture(t)
+	f.settled()
+	f.write("a.mkv", "one")
+	f.stabilise()
+	j := f.claim()
+	f.upload(j, map[string]string{"a.mp4": "v", "a.pt-BR.srt": "s", "a.pt-BR.1.ass": "s"})
+	f.complete(j)
+	f.svc.PublishPending(context.Background())
+	if _, ok := f.inLibrary("a.pt-BR.srt"); !ok {
+		t.Fatal("regional sidecar not published")
+	}
+	if err := os.Remove(filepath.Join(f.cfg.OriginalsDir, "a.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	f.scan()
+	f.advance(2 * time.Hour)
+	f.scan()
+	for _, name := range []string{"a.mp4", "a.pt-BR.srt", "a.pt-BR.1.ass"} {
+		if _, ok := f.inLibrary(name); ok {
+			t.Errorf("%s left behind", name)
+		}
+	}
+}
+
+func TestSidecarsOfLeavesNeighboursAlone(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.en.srt", "a.2020.srt", "a.2020.en.srt", "ab.en.srt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := sidecarsOf(filepath.Join(dir, "a.mp4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || filepath.Base(got[0]) != "a.en.srt" {
+		t.Errorf("sidecars = %v", got)
+	}
+}
+
+func TestLeaseExpiryNamesTheReason(t *testing.T) {
+	f := newFixture(t)
+	f.settled()
+	f.write("a.mkv", "one")
+	f.stabilise()
+	for range f.cfg.MaxAttempts {
+		f.claim()
+		f.advance(2 * time.Minute)
+		f.svc.reap(context.Background())
+	}
+	if !f.notify.has("Last error: worker lease expired") {
+		t.Errorf("messages = %v", f.notify.messages)
+	}
+}
+
+func TestDeletedSourceDropsItsPublishingJob(t *testing.T) {
+	f := newFixture(t)
+	f.settled()
+	f.write("a.mkv", "one")
+	f.stabilise()
+	j := f.claim()
+	f.upload(j, map[string]string{"a.mp4": "v"})
+	f.complete(j)
+
+	if err := os.Remove(filepath.Join(f.cfg.OriginalsDir, "a.mkv")); err != nil {
+		t.Fatal(err)
+	}
+	f.scan()
+	f.advance(2 * time.Hour)
+	f.scan()
+	f.svc.PublishPending(context.Background())
+	if _, ok := f.inLibrary("a.mp4"); ok {
+		t.Error("a deleted source must not publish an orphan")
+	}
+}

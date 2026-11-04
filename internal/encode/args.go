@@ -2,6 +2,7 @@ package encode
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -99,6 +100,32 @@ func audioArgs(plan *Plan, prof Profile) []string {
 			"-b:a:"+idx, fmt.Sprintf("%dk", prof.AudioKbps))
 	}
 	return args
+}
+
+// sidecarLang is a language as a file name may spell it. It must start with a
+// letter, or a title such as "x.2020" would claim "x.2020.srt".
+const sidecarLang = `[A-Za-z][A-Za-z0-9-]{1,34}`
+
+var (
+	langPattern    = regexp.MustCompile(`^` + sidecarLang + `$`)
+	sidecarPattern = regexp.MustCompile(`^\.` + sidecarLang + `(\.[0-9]+)?\.(srt|ass)$`)
+)
+
+// cleanLang makes a source's language tag safe for a file name. The tag comes
+// from the file, so it can be anything.
+func cleanLang(lang string) string {
+	if langPattern.MatchString(lang) {
+		return lang
+	}
+	return "und"
+}
+
+// IsSidecar reports whether name is a subtitle sidecar of the video with this
+// stem, as "<stem>.<lang>.srt" or "<stem>.<lang>.<n>.ass". A title never claims
+// a neighbour's files.
+func IsSidecar(stem, name string) bool {
+	rest, ok := strings.CutPrefix(name, stem)
+	return ok && sidecarPattern.MatchString(rest)
 }
 
 // SidecarName returns the name of a subtitle sidecar. n disambiguates several

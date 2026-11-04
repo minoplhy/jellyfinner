@@ -169,7 +169,7 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 // used.
 const HealthWindow = time.Minute
 
-// Servable is the health rule: the probe from B passed and the agent reported
+// Servable is the health rule: the orchestrator's probe passed and the agent reported
 // recently.
 func Servable(st queue.NodeStatus, now time.Time) bool {
 	return st.Healthy && now.Sub(time.Unix(st.LastSeen, 0)) < HealthWindow

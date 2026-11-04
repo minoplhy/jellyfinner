@@ -69,6 +69,11 @@ func (s *Server) jobSource(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	// Chunks arrive over many requests, so a replaced file would mix two versions.
+	if info.Size() != j.SourceSize || info.ModTime().UnixNano() != j.SourceMtime {
+		http.Error(w, "source changed", http.StatusGone)
+		return
+	}
 	s.extendTransfer(w)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	http.ServeContent(w, r, "", info.ModTime(), f)

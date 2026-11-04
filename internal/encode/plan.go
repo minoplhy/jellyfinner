@@ -119,7 +119,7 @@ func NewPlan(p *Probe, prof Profile, forceEncode bool) (*Plan, error) {
 		if slices.Contains(textSubCodecs, s.CodecName) {
 			plan.Subs = append(plan.Subs, SubPlan{
 				Index:  s.Index,
-				Lang:   s.Language(),
+				Lang:   cleanLang(s.Language()),
 				Styled: s.CodecName == "ass" || s.CodecName == "ssa",
 			})
 			continue

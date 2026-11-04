@@ -39,9 +39,11 @@ type HeartbeatResponse struct {
 	Cancel bool `json:"cancel"`
 }
 
-// FinishRequest ends a job, successfully when Error is empty.
+// FinishRequest ends a job, successfully when Error is empty. Released hands it
+// back unharmed, because the worker is stopping rather than the job failing.
 type FinishRequest struct {
 	Lease    string          `json:"lease"`
+	Released bool            `json:"released,omitempty"`
 	Manifest json.RawMessage `json:"manifest,omitempty"`
 	Error    string          `json:"error,omitempty"`
 	Log      string          `json:"log,omitempty"`

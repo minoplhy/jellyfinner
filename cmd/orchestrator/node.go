@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"text/tabwriter"
 
 	"jellyfinner/internal/config"
@@ -82,7 +83,7 @@ func addNode(cfg *config.Config, store *queue.Store, name string, args []string)
 		if *quotaGB <= 0 {
 			return errors.New("an edge node needs a positive --quota-gb")
 		}
-		node.Kind, node.URL, node.QuotaBytes = queue.NodeEdge, *edgeURL, *quotaGB*1e9
+		node.Kind, node.URL, node.QuotaBytes = queue.NodeEdge, strings.TrimSuffix(*edgeURL, "/"), *quotaGB*1e9
 		if node.SigningKey, err = queue.NewSecret(); err != nil {
 			return err
 		}

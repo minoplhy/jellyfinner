@@ -11,9 +11,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 
+	"jellyfinner/internal/encode"
 	"jellyfinner/internal/pipeline"
 	"jellyfinner/internal/queue"
 )
@@ -116,11 +116,13 @@ func (s *Service) publish(j *queue.Job, incoming string) (pipeline.File, error) 
 
 	// The output path comes from the database, never from the upload.
 	video := path.Base(j.OutputPath)
+	stem := strings.TrimSuffix(video, path.Ext(video))
 	var sidecars []string
 	var videoFile pipeline.File
 	foundVideo := false
 	for _, f := range m.Files {
-		if f.Name != filepath.Base(f.Name) || f.Name == "." || f.Name == ".." {
+		// Files land beside other titles, so only this title's names may pass.
+		if f.Name != video && !encode.IsSidecar(stem, f.Name) {
 			return none, fmt.Errorf("manifest: unsafe file name %q", f.Name)
 		}
 		if err := checkFile(filepath.Join(incoming, f.Name), f); err != nil {
@@ -195,11 +197,6 @@ func checkFile(file string, want pipeline.File) error {
 	return nil
 }
 
-// sidecarPattern matches what follows the stem in "<stem>.<lang>.srt" and
-// "<stem>.<lang>.<n>.srt", or the same with .ass, so a title never claims a
-// neighbour's subtitles.
-var sidecarPattern = regexp.MustCompile(`^\.[A-Za-z]{2,8}(\.[0-9]+)?\.(srt|ass)$`)
-
 // sidecarsOf lists the subtitle files belonging to a video.
 func sidecarsOf(video string) ([]string, error) {
 	dir := filepath.Dir(video)
@@ -213,7 +210,7 @@ func sidecarsOf(video string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if rest, ok := strings.CutPrefix(e.Name(), stem); ok && sidecarPattern.MatchString(rest) {
+		if encode.IsSidecar(stem, e.Name()) {
 			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}

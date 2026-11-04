@@ -25,6 +25,10 @@ import (
 // ManifestName is pushed last, so its presence means the upload is complete.
 const ManifestName = "manifest.json"
 
+// ErrShutdown is the cancel cause when the worker itself is stopping. The job
+// will run again, so scratch stays for the retry.
+var ErrShutdown = errors.New("worker shutting down")
+
 // Scratch must hold the source plus the output. Outputs are capped well below
 // most sources, so half the source size again is a safe margin.
 const scratchFactor = 1.5
@@ -59,8 +63,9 @@ type Manifest struct {
 // Progress receives the current stage, and completion from 0 to 1 when known.
 type Progress func(stage string, fraction float64)
 
-// Run executes a job. Success or cancellation clears scratch. A failure keeps
-// the pulled source, so a retry on this node skips the transfer.
+// Run executes a job. Success or cancellation clears scratch. A failure or a
+// worker shutdown keeps the pulled source, so a retry on this node skips the
+// transfer.
 func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Progress) (*Manifest, error) {
 	if err := j.Validate(); err != nil {
 		return nil, err
@@ -75,7 +80,7 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 	}
 	succeeded := false
 	defer func() {
-		if succeeded || ctx.Err() != nil {
+		if succeeded || (ctx.Err() != nil && !errors.Is(context.Cause(ctx), ErrShutdown)) {
 			os.RemoveAll(dir)
 		}
 	}()
@@ -84,12 +89,16 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 	if err != nil {
 		return nil, err
 	}
-	if err := checkScratch(cfg.Scratch, size); err != nil {
+	src := filepath.Join(dir, "source"+path.Ext(j.Source))
+	var held int64
+	if info, err := os.Stat(src); err == nil {
+		held = info.Size()
+	}
+	if err := checkScratch(cfg.Scratch, size, held); err != nil {
 		return nil, err
 	}
 
 	progress("pull", 0)
-	src := filepath.Join(dir, "source"+path.Ext(j.Source))
 	started := time.Now()
 	if err := cfg.Transfer.Pull(ctx, j, src); err != nil {
 		return nil, err
@@ -263,13 +272,14 @@ func describe(file, name string) (File, error) {
 	return File{Name: name, Size: size, SHA256: hex.EncodeToString(h.Sum(nil))}, nil
 }
 
-func checkScratch(dir string, sourceSize int64) error {
+// checkScratch allows for held, the part of the source already on disk.
+func checkScratch(dir string, sourceSize, held int64) error {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(dir, &st); err != nil {
 		return fmt.Errorf("check scratch: %w", err)
 	}
 	free := int64(st.Bavail) * int64(st.Bsize)
-	need := int64(float64(sourceSize) * scratchFactor)
+	need := int64(float64(sourceSize)*scratchFactor) - held
 	if free < need {
 		return fmt.Errorf("scratch has %d bytes free, need %d", free, need)
 	}

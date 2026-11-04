@@ -39,7 +39,7 @@ Exactly one is active, set by `ENCODE_MODE`. There is no default.
 | Cost | Every title is moved and encoded | Only titles someone wants |
 | First play | Immediate once encoded | Waits for the encode |
 
-The first scan records your existing library and queues nothing. In `auto`, encoding it is a separate step, `orchestrator backfill start`, with a daily traffic budget.
+The first scan that finds files records your existing library and queues nothing, so an empty or wrongly mounted folder cannot start the whole library later. In `auto`, encoding it is a separate step, `orchestrator backfill start`, with a daily traffic budget.
 
 ## Output
 
@@ -95,7 +95,7 @@ Source paths are relative to `ORIGINALS_DIR`. `switch-mode` needs `ENCODE_MODE` 
 
 For viewers far from Jellyfin. You choose titles to cache on a small node nearby, and the router redirects assigned viewers to it, while browsing and watch progress stay on Jellyfin. If anything looks wrong, playback simply comes from the origin.
 
-Edge nodes work behind any reverse proxy, or use the bundled Caddy profile. Read [deploy/edge-security.md](deploy/edge-security.md) before enrolling a node.
+Edge nodes work behind any reverse proxy, or use the commented `caddy` block in the compose file. Read [deploy/edge-security.md](deploy/edge-security.md) before enrolling a node.
 
 ## Development
 

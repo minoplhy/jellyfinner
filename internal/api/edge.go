@@ -91,6 +91,7 @@ func (s *Server) edgePoll(w http.ResponseWriter, r *http.Request) {
 					s.fail(w, err)
 					return
 				}
+				s.hooks.EdgeFailed(node, p.SHA256, "missing on node")
 			}
 		}
 	}
@@ -112,7 +113,10 @@ func (s *Server) edgeAck(w http.ResponseWriter, r *http.Request) {
 	case req.Verb == control.VerbPull && req.Error == "":
 		err = s.store.ActivatePlacement(node, req.SHA256)
 	case req.Verb == control.VerbPull:
-		err = s.store.SetPlacementState(node, req.SHA256, queue.PlacementFailed, req.Error)
+		var failed bool
+		if failed, err = s.store.FailPlacement(node, req.SHA256, req.Error); failed {
+			s.hooks.EdgeFailed(node, req.SHA256, req.Error)
+		}
 	case req.Verb == control.VerbDelete && req.Error == "":
 		err = s.store.DeletePlacement(node, req.SHA256)
 	case req.Verb == control.VerbDelete:

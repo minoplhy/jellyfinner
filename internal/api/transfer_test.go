@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"jellyfinner/internal/control"
+	"jellyfinner/internal/queue"
 	"jellyfinner/internal/transfer"
 )
 
@@ -32,7 +33,16 @@ func transferFixture(t *testing.T, nodes []testNode) (*fixture, *control.ClaimRe
 	if err := os.WriteFile(filepath.Join(f.cfg.OriginalsDir, "a.mkv"), source, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	f.enqueue(t, "a")
+	info, err := os.Stat(filepath.Join(f.cfg.OriginalsDir, "a.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Enqueue(&queue.Job{
+		ID: "a", Path: "a.mkv", OutputPath: "a.mp4", Priority: queue.PriorityNew,
+		SourceSize: info.Size(), SourceMtime: info.ModTime().UnixNano(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	claim, err := f.client.Claim(context.Background())
 	if err != nil || claim == nil {
 		t.Fatalf("claim: %v %v", claim, err)
@@ -315,5 +325,64 @@ func TestLostLeaseStopsPull(t *testing.T) {
 	}
 	if ranges.Load() != 1 {
 		t.Errorf("kept trying after losing the lease: %d requests", ranges.Load())
+	}
+}
+
+func TestPushSurvivesDropsWhileProgressing(t *testing.T) {
+	f, claim, source := transferFixture(t, allNodes())
+	var drops atomic.Int64
+	inFront(t, f, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut && drops.Add(1) <= 10 {
+				r.Body = io.NopCloser(&brokenReader{r: r.Body, left: 4 << 20})
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	local := filepath.Join(t.TempDir(), "out.mp4")
+	if err := os.WriteFile(local, source, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := newAPI(f, claim.Lease).Push(context.Background(), &claim.Job, local, "out.mp4"); err != nil {
+		t.Fatalf("every drop made progress, so the upload should finish: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(f.cfg.IncomingDir, claim.Job.ID, "out.mp4"))
+	if !bytes.Equal(got, source) {
+		t.Error("resumed upload differs")
+	}
+}
+
+func TestPushGivesUpWithoutProgress(t *testing.T) {
+	f, claim, _ := transferFixture(t, allNodes())
+	var puts atomic.Int64
+	inFront(t, f, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut {
+				puts.Add(1)
+				http.Error(w, "down", http.StatusBadGateway)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	local := filepath.Join(t.TempDir(), "out.mp4")
+	if err := os.WriteFile(local, []byte("video"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := newAPI(f, claim.Lease).Push(context.Background(), &claim.Job, local, "out.mp4"); err == nil {
+		t.Fatal("an upload that never advances must fail")
+	}
+	if got := puts.Load(); got != 6 {
+		t.Errorf("tried %d times, want 6", got)
+	}
+}
+
+func TestReplacedSourceIsNotServed(t *testing.T) {
+	f, claim, _ := transferFixture(t, allNodes())
+	if err := os.WriteFile(filepath.Join(f.cfg.OriginalsDir, "a.mkv"), []byte("replaced"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.client.SourceRange(context.Background(), claim.Job.ID, claim.Lease, 0, 4); err == nil {
+		t.Error("a replaced source must not be served as this job's")
 	}
 }

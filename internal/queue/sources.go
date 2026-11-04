@@ -82,6 +82,12 @@ func (s *Store) UpdateSource(path string, size, mtimeNS int64) error {
 	return err
 }
 
+// SetBacklog holds a source for the backfill instead of queueing it.
+func (s *Store) SetBacklog(path string) error {
+	_, err := s.db.Exec(`UPDATE sources SET backlog = 1 WHERE path = ?`, path)
+	return err
+}
+
 // SetMissing records when a file disappeared, or clears it with 0.
 func (s *Store) SetMissing(path string, since int64) error {
 	_, err := s.db.Exec(`UPDATE sources SET missing_since = ? WHERE path = ?`, since, path)
@@ -102,10 +108,13 @@ func (s *Store) DeleteSource(path string) error {
 
 // SetEncoded records the source version that was just published.
 func (s *Store) SetEncoded(path string, size, mtimeNS int64, profile, sha256 string, bytes int64) error {
-	_, err := s.db.Exec(`UPDATE sources SET encoded_size = ?, encoded_mtime_ns = ?, encoded_profile = ?,
+	res, err := s.db.Exec(`UPDATE sources SET encoded_size = ?, encoded_mtime_ns = ?, encoded_profile = ?,
 		encoded_sha256 = ?, encoded_bytes = ?, backlog = 0 WHERE path = ?`,
 		size, mtimeNS, profile, sha256, bytes, path)
-	return err
+	if err != nil {
+		return err
+	}
+	return requireRow(res, path, "is no longer tracked")
 }
 
 // BumpRevision increments and returns a source's revision, which gives a

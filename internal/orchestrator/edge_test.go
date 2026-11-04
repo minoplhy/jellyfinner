@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -191,3 +193,21 @@ func (f *fixture) remove(path string) {
 }
 
 var osRename = os.Rename
+
+func TestProbeToleratesTrailingSlash(t *testing.T) {
+	f := newFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	if err := f.store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: srv.URL + "/"}); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.probeNodes(context.Background())
+	st, err := f.store.GetNodeStatus("edge1")
+	if err != nil || !st.Healthy {
+		t.Errorf("status = %+v, %v", st, err)
+	}
+}

@@ -104,6 +104,18 @@ func (s *Store) SetPlacementState(node, sha256, state, message string) error {
 	return err
 }
 
+// FailPlacement records a pull that failed, and reports whether it was still
+// wanted. One withdrawn meanwhile stays as it is, so its delete still goes out.
+func (s *Store) FailPlacement(node, sha256, message string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE placements SET state = ?, error = ? WHERE node = ? AND sha256 = ? AND state = ?`,
+		PlacementFailed, message, node, sha256, PlacementPulling)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // ActivatePlacement makes a pulled file servable, unless it was withdrawn
 // while the node was pulling it.
 func (s *Store) ActivatePlacement(node, sha256 string) error {
@@ -156,7 +168,7 @@ func (s *Store) NodeSeen(node string, free, total int64) error {
 	return err
 }
 
-// SetNodeHealth records the result of a probe from B.
+// SetNodeHealth records the result of a probe from the orchestrator.
 func (s *Store) SetNodeHealth(node string, healthy bool) error {
 	_, err := s.db.Exec(`INSERT INTO edge_status (node, healthy) VALUES (?, ?)
 		ON CONFLICT (node) DO UPDATE SET healthy = excluded.healthy`, node, healthy)

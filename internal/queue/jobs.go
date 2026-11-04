@@ -194,7 +194,7 @@ func (s *Store) Heartbeat(id, lease, stage string, fraction float64, leaseFor ti
 }
 
 // Complete moves a job to publishing. The worker's part is done, but nothing
-// reaches the library until B has checked the upload.
+// reaches the library until the orchestrator has checked the upload.
 func (s *Store) Complete(id, lease, manifest, log string) error {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, manifest = ?, log = ?, stage = 'publish', fraction = 1,
 		lease_id = '', updated = ? WHERE id = ? AND lease_id = ? AND lease_id != '' AND state = ?`,
@@ -214,6 +214,15 @@ func leaseResult(res sql.Result, err error) error {
 		return ErrLeaseLost
 	}
 	return nil
+}
+
+// Release requeues a job its worker gave up to shut down. That says nothing
+// about the job, so the attempt is given back.
+func (s *Store) Release(id, lease string) error {
+	res, err := s.db.Exec(`UPDATE jobs SET state = ?, attempts = attempts - 1, lease_id = '', stage = '', fraction = 0,
+		updated = ? WHERE id = ? AND lease_id = ? AND lease_id != '' AND state = ?`,
+		StateQueued, s.Now().Unix(), id, lease, StateRunning)
+	return leaseResult(res, err)
 }
 
 // Fail records a worker failure. The job is retried until maxAttempts, and
@@ -281,8 +290,9 @@ func (s *Store) ExpireLeases(maxAttempts int) ([]*Job, error) {
 		}
 		for _, j := range expired {
 			final := j.Attempts >= maxAttempts
-			if _, err := tx.Exec(`UPDATE jobs SET state = ?, error = 'worker lease expired', lease_id = '', not_before = ?, updated = ? WHERE id = ?`,
-				nextState(final), s.retryAt(j.Attempts), now, j.ID); err != nil {
+			j.Error = "worker lease expired"
+			if _, err := tx.Exec(`UPDATE jobs SET state = ?, error = ?, lease_id = '', not_before = ?, updated = ? WHERE id = ?`,
+				nextState(final), j.Error, s.retryAt(j.Attempts), now, j.ID); err != nil {
 				return err
 			}
 			if final {
@@ -301,7 +311,7 @@ func (s *Store) MarkDone(id string) error {
 	return err
 }
 
-// PublishFailed requeues a job whose upload B rejected, and reports true once
+// PublishFailed requeues a job whose upload the orchestrator rejected, and reports true once
 // it has failed for good.
 func (s *Store) PublishFailed(id, reason string, maxAttempts int) (bool, error) {
 	j, err := s.Get(id)
@@ -325,10 +335,11 @@ func (s *Store) Cancel(id string) error {
 	return requireRow(res, id, "is not queued or running")
 }
 
-// CancelForPath cancels every queued or running job for a source, except keep.
+// CancelForPath cancels every unfinished job for a source, except keep. That
+// includes one waiting to publish, whose output would no longer belong anywhere.
 func (s *Store) CancelForPath(path, keep string) (int64, error) {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, updated = ?
-		WHERE path = ? AND id != ? AND state IN ('queued', 'running')`,
+		WHERE path = ? AND id != ? AND state IN ('queued', 'running', 'publishing')`,
 		StateCancelled, s.Now().Unix(), path, keep)
 	if err != nil {
 		return 0, err

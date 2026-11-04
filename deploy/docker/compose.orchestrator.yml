@@ -23,8 +23,13 @@ x-app: &app
     CONTROL_URL: https://control.example.com # EDIT
     # Jellyfin on this host. For the Jellyfin block below, use http://jellyfin:8096.
     JELLYFIN_URL: http://host.docker.internal:8096 # EDIT
-    # Optional in auto. Create one in Jellyfin under Dashboard, API Keys.
+    # Optional in auto, required in manual. Create one in Jellyfin under
+    # Dashboard, API Keys.
     JELLYFIN_TOKEN: ""
+    # Manual mode: at least 32 characters, such as from openssl rand -hex 32.
+    # Also uncomment port 8201 below. Jellyfin's Webhook plugin sends this in the
+    # X-Webhook-Token header, see deploy/docker/README.md.
+    # WEBHOOK_TOKEN: replace-with-a-long-random-value # EDIT
     # Where Jellyfin sees the library folder.
     JELLYFIN_LIBRARY_DIR: /media
     # Source data backfill may start per day. Size it from encode time on small workers.
@@ -69,6 +74,7 @@ services:
       # compose project, join its network instead, as shown at the end.
       - 127.0.0.1:8200:8200 # Control API, for workers and edge nodes
       - 127.0.0.1:8202:8202 # Admin UI
+      # - 127.0.0.1:8201:8201 # Manual mode: playback events from a Jellyfin on this host
     healthcheck:
       test: ["CMD", "orchestrator", "health", "serve"]
       interval: 30s

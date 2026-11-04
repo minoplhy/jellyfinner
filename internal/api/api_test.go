@@ -38,6 +38,8 @@ type fixture struct {
 	completed int
 	failed    []*queue.Job
 	nodes     []testNode
+
+	edgeFailed []string
 }
 
 func newFixture(t *testing.T, nodes []testNode) *fixture {
@@ -66,6 +68,9 @@ func newFixture(t *testing.T, nodes []testNode) *fixture {
 		},
 		Completed: func() { f.completed++ },
 		Failed:    func(j *queue.Job) { f.failed = append(f.failed, j) },
+		EdgeFailed: func(node, sha256, reason string) {
+			f.edgeFailed = append(f.edgeFailed, node+":"+reason)
+		},
 	}, log.New(io.Discard, "", 0))
 	f.server = httptest.NewServer(srv.Handler())
 	t.Cleanup(f.server.Close)
@@ -478,5 +483,62 @@ func TestRemovedNodeIsRefused(t *testing.T) {
 	}
 	if got := post(t, f.server.URL, "Bearer "+token); got != http.StatusUnauthorized {
 		t.Errorf("after removal: %d", got)
+	}
+}
+
+func TestReleaseGivesTheAttemptBack(t *testing.T) {
+	f := newFixture(t, allNodes())
+	ctx := context.Background()
+	f.enqueue(t, "a")
+	claim, err := f.client.Claim(ctx)
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v, %v", claim, err)
+	}
+	if err := f.client.Finish(ctx, "a", control.FinishRequest{Lease: claim.Lease, Released: true}); err != nil {
+		t.Fatal(err)
+	}
+	j, err := f.store.Get("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.State != queue.StateQueued || j.Attempts != 0 || j.LeaseID != "" {
+		t.Errorf("job = %+v", j)
+	}
+	if err := f.client.Finish(ctx, "a", control.FinishRequest{Lease: claim.Lease, Released: true}); !errors.Is(err, control.ErrLeaseLost) {
+		t.Errorf("a second release = %v", err)
+	}
+}
+
+func TestFailedPullDoesNotUndoAWithdrawal(t *testing.T) {
+	f, edgeClient, hash := edgeFixture(t)
+	ctx := context.Background()
+	if err := f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetPlacementState("edge1", hash, queue.PlacementDeleting, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := edgeClient.EdgeAck(ctx, control.EdgeAck{Verb: control.VerbPull, SHA256: hash, Error: "disk full"}); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := f.store.NodePlacements("edge1")
+	if err != nil || len(ps) != 1 || ps[0].State != queue.PlacementDeleting {
+		t.Errorf("placements = %+v, %v", ps, err)
+	}
+	if len(f.edgeFailed) != 0 {
+		t.Errorf("a withdrawn copy is no failure: %v", f.edgeFailed)
+	}
+}
+
+func TestFailedPullIsReported(t *testing.T) {
+	f, edgeClient, hash := edgeFixture(t)
+	if err := f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
+		t.Fatal(err)
+	}
+	if err := edgeClient.EdgeAck(context.Background(), control.EdgeAck{Verb: control.VerbPull, SHA256: hash, Error: "disk full"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.edgeFailed) != 1 || f.edgeFailed[0] != "edge1:disk full" {
+		t.Errorf("reported = %v", f.edgeFailed)
 	}
 }

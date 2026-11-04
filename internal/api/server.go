@@ -33,6 +33,8 @@ type Hooks struct {
 	WorkerJob func(*queue.Job) *job.Job
 	Completed func()
 	Failed    func(*queue.Job)
+	// EdgeFailed reports a copy a node no longer holds or could not fetch.
+	EdgeFailed func(node, sha256, reason string)
 }
 
 // Server handles control requests.
@@ -204,6 +206,14 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if req.Released {
+		if err := s.store.Release(id, req.Lease); err != nil {
+			s.fail(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if req.Error == "" {
 		if len(req.Manifest) == 0 {
 			http.Error(w, "manifest required", http.StatusBadRequest)

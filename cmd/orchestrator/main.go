@@ -170,7 +170,7 @@ func serve(envFile string) error {
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	var library orchestrator.MediaServer
-	if cfg.JellyfinURL != "" {
+	if cfg.JellyfinURL != "" && cfg.JellyfinToken != "" {
 		library = jellyfin.New(cfg.JellyfinURL, cfg.JellyfinToken)
 	}
 	svc := orchestrator.New(cfg, store, notify.New(cfg.DiscordURL, cfg.NtfyURL), library, logger)
@@ -199,6 +199,9 @@ func serve(envFile string) error {
 		WorkerJob: svc.WorkerJob,
 		Completed: svc.TriggerPublish,
 		Failed:    func(j *queue.Job) { svc.JobFailed(ctx, j) },
+		EdgeFailed: func(node, sha256, reason string) {
+			svc.EdgeCopyFailed(ctx, node, sha256, reason)
+		},
 	}, logger)
 	server := &http.Server{
 		Addr:              cfg.ControlAddr,

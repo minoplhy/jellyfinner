@@ -97,6 +97,39 @@ CREATE INDEX IF NOT EXISTS jobs_claim ON jobs (state, priority DESC, created);
 CREATE INDEX IF NOT EXISTS jobs_path ON jobs (path, state);
 `
 
+// migrations change a database that already has the schema above, in order. Only
+// ever append: each one's position is the user_version it brings a database to.
+var migrations []string
+
+// migrate applies whichever steps this database has not had. The transaction
+// takes the write lock first, so two processes cannot both apply a step.
+func migrate(db *sql.DB, steps []string) error {
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var version int
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version > len(steps) {
+		return fmt.Errorf("database is version %d, newer than this program's %d", version, len(steps))
+	}
+	if version == len(steps) {
+		return nil
+	}
+	for _, step := range steps[version:] {
+		if _, err := tx.Exec(step); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(steps))); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // Store wraps the database. Now is replaceable so tests can move time.
 // RetryDelay spaces out attempts, growing with each one, so a short outage
 // cannot use up a job's attempts in seconds. BackfillBudget caps the source
@@ -122,6 +155,10 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	if err := migrate(db, migrations); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate %s: %w", path, err)
 	}
 	return &Store{db: db, Now: time.Now, RetryDelay: time.Minute}, nil
 }

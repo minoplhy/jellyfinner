@@ -62,6 +62,10 @@ Add a new library pointing at the `library` folder of your store, and create a t
 
 **Check:** the test user plays the episode on each app you use. In a browser's Network tab, a single `stream` request means direct play. Numbered `.ts` or `.mp4` chunks, or `/hls1/` in the URL, mean the server is transcoding. Try the `.ass` subtitle track, and check signs and positioning.
 
+**In manual mode,** set up the webhook as in [docker/README.md](docker/README.md#manual-mode).
+
+**Check:** the test user presses play on a stub, and `queue list` shows a new job for that title.
+
 ## 5. Edge node
 
 Run `docker compose exec orchestrator orchestrator node add edge1 --edge --url https://edge1.example.com --quota-gb 500` on the orchestrator. Put the printed values into the edge node's compose file, then run `docker compose up -d` there. Give the node HTTPS with the `caddy` block or your own proxy.

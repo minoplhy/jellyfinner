@@ -207,18 +207,33 @@ func (a *API) Push(ctx context.Context, j *job.Job, local, name string) error {
 	}
 	size := info.Size()
 	var offset int64
-	return a.retry(ctx, func() error {
+	// Attempts only count failures without progress. A large file on a poor link
+	// may drop many times, and losing it means encoding the title again.
+	for attempt := 0; ; attempt++ {
+		sent := offset
 		err := a.Client.Upload(ctx, j.ID, a.Lease, name, offset, io.NewSectionReader(f, offset, size-offset), size-offset)
-		if err == nil || errors.Is(err, control.ErrLeaseLost) {
+		if err == nil || errors.Is(err, control.ErrLeaseLost) || ctx.Err() != nil {
 			return err
 		}
 		// A failed check keeps the old offset. The server refuses a mismatch,
 		// and offset 0 is always safe.
-		if held, oerr := a.Client.UploadOffset(ctx, j.ID, a.Lease, name); oerr == nil && held <= size {
+		held, oerr := a.Client.UploadOffset(ctx, j.ID, a.Lease, name)
+		if errors.Is(oerr, control.ErrLeaseLost) {
+			return oerr
+		}
+		if oerr == nil && held <= size {
 			offset = held
 		} else if oerr == nil {
 			offset = 0
 		}
-		return err
-	})
+		if offset > sent {
+			attempt = 0
+		}
+		if attempt >= maxAttempts-1 {
+			return err
+		}
+		if werr := a.wait(ctx, attempt); werr != nil {
+			return werr
+		}
+	}
 }
