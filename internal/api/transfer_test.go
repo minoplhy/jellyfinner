@@ -386,3 +386,69 @@ func TestReplacedSourceIsNotServed(t *testing.T) {
 		t.Error("a replaced source must not be served as this job's")
 	}
 }
+
+// tooLargeAbove answers 413 to uploads over limit bytes, as a reverse proxy
+// with a body size limit does, and counts every upload request.
+func tooLargeAbove(limit int64, puts *atomic.Int64) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut {
+				puts.Add(1)
+				if r.ContentLength > limit {
+					http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func TestPushShrinksOn413(t *testing.T) {
+	f, claim, source := transferFixture(t, allNodes())
+	var puts atomic.Int64
+	inFront(t, f, tooLargeAbove(4<<20, &puts))
+	local := filepath.Join(t.TempDir(), "out.mp4")
+	if err := os.WriteFile(local, source, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	api := newAPI(f, claim.Lease)
+	if err := api.Push(context.Background(), &claim.Job, local, "out.mp4"); err != nil {
+		t.Fatalf("smaller requests fit under the limit, so the upload should finish: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(f.cfg.IncomingDir, claim.Job.ID, "out.mp4"))
+	if !bytes.Equal(got, source) {
+		t.Error("chunked upload differs")
+	}
+
+	// The job's next file starts at the size that worked.
+	before := puts.Load()
+	small := filepath.Join(t.TempDir(), "small")
+	if err := os.WriteFile(small, source[:6<<20], 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.Push(context.Background(), &claim.Job, small, "out.srt"); err != nil {
+		t.Fatal(err)
+	}
+	if got := puts.Load() - before; got != 2 {
+		t.Errorf("second file took %d requests, want 2", got)
+	}
+}
+
+func TestPushGivesUpWhen413AtFloor(t *testing.T) {
+	f, claim, source := transferFixture(t, allNodes())
+	var puts atomic.Int64
+	inFront(t, f, tooLargeAbove(0, &puts))
+	local := filepath.Join(t.TempDir(), "out.mp4")
+	if err := os.WriteFile(local, source, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	err := newAPI(f, claim.Lease).Push(context.Background(), &claim.Job, local, "out.mp4")
+	if !errors.Is(err, control.ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	// 32 MB halved down to 256 KB is 8 sizes.
+	if got := puts.Load(); got != 8 {
+		t.Errorf("sent %d requests, want 8", got)
+	}
+}

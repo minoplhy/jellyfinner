@@ -64,8 +64,8 @@ type Manifest struct {
 type Progress func(stage string, fraction float64)
 
 // Run executes a job. Success or cancellation clears scratch. A failure or a
-// worker shutdown keeps the pulled source, so a retry on this node skips the
-// transfer.
+// worker shutdown keeps the pulled source and any verified encode, so a retry
+// on this node skips the pull, and after a failed push skips the encode too.
 func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Progress) (*Manifest, error) {
 	if err := j.Validate(); err != nil {
 		return nil, err
@@ -105,10 +105,6 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 	}
 	logRate(log, "pull", size, started)
 
-	probe, err := encode.RunProbe(ctx, cfg.FFprobe, src)
-	if err != nil {
-		return nil, err
-	}
 	// The job decides the output, and the node only decides its hardware.
 	profile := cfg.Profile
 	if j.Profile.MaxHeight > 0 {
@@ -116,40 +112,33 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 		profile = j.Profile
 		profile.Device = device
 	}
-	plan, err := encode.NewPlan(probe, profile, j.ForceEncode)
-	if err != nil {
-		return nil, err
-	}
-
-	outDir := filepath.Join(dir, "out")
-	if err := os.RemoveAll(outDir); err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(outDir, 0o750); err != nil {
-		return nil, err
-	}
 	base := path.Base(j.OutputPath)
-	out := filepath.Join(outDir, base)
-	backend, err := encodeVideo(ctx, cfg, j, profile, src, out, plan, log, progress)
-	if err != nil {
-		return nil, err
-	}
-
-	sidecars, err := extractSubtitles(ctx, cfg, src, outDir, base, plan, log)
-	if err != nil {
-		return nil, err
+	outDir := filepath.Join(dir, "out")
+	key := reuseKey(cfg, j, profile, base, size)
+	done := loadEncoded(outDir, key)
+	if done != nil {
+		fmt.Fprintln(log, "reusing the encode from an earlier attempt")
+	} else {
+		done, err = encodeAll(ctx, cfg, j, profile, src, outDir, base, log, progress)
+		if err != nil {
+			return nil, err
+		}
+		done.Key = key
+		if err := saveEncoded(outDir, done); err != nil {
+			return nil, err
+		}
 	}
 
 	progress("push", 0)
 	manifest := &Manifest{
 		JobID:      j.ID,
 		OutputPath: j.OutputPath,
-		Backend:    backend,
-		VideoCopy:  plan.Video.Copy,
-		Skipped:    plan.Skipped,
+		Backend:    done.Backend,
+		VideoCopy:  done.VideoCopy,
+		Skipped:    done.Skipped,
 	}
 	started = time.Now()
-	if err := push(ctx, cfg, j, outDir, append(sidecars, base), manifest); err != nil {
+	if err := push(ctx, cfg, j, outDir, done.Names, manifest); err != nil {
 		return nil, err
 	}
 	var pushed int64
@@ -160,6 +149,94 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 	progress("done", 1)
 	succeeded = true
 	return manifest, nil
+}
+
+// encodeAll probes, encodes and extracts subtitles into a fresh outDir. The
+// result is verified, and lists every file to push with the main file last.
+func encodeAll(ctx context.Context, cfg Config, j *job.Job, profile encode.Profile, src, outDir, base string, log io.Writer, progress Progress) (*encoded, error) {
+	probe, err := encode.RunProbe(ctx, cfg.FFprobe, src)
+	if err != nil {
+		return nil, err
+	}
+	plan, err := encode.NewPlan(probe, profile, j.ForceEncode)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.RemoveAll(outDir); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(outDir, 0o750); err != nil {
+		return nil, err
+	}
+	backend, err := encodeVideo(ctx, cfg, j, profile, src, filepath.Join(outDir, base), plan, log, progress)
+	if err != nil {
+		return nil, err
+	}
+	sidecars, err := extractSubtitles(ctx, cfg, src, outDir, base, plan, log)
+	if err != nil {
+		return nil, err
+	}
+	return &encoded{
+		Names:     append(sidecars, base),
+		Backend:   backend,
+		VideoCopy: plan.Video.Copy,
+		Skipped:   plan.Skipped,
+	}, nil
+}
+
+// encodedName marks a verified encode in the output folder, so a retry after a
+// failed push sends it again instead of encoding the title again.
+const encodedName = "encoded.json"
+
+type encoded struct {
+	Key       string         `json:"key"`
+	Names     []string       `json:"names"`
+	Backend   encode.Backend `json:"backend,omitempty"`
+	VideoCopy bool           `json:"video_copy"`
+	Skipped   []string       `json:"skipped,omitempty"`
+}
+
+// reuseKey covers everything that changes the output for the same job ID, which
+// already pins the source version and revision.
+func reuseKey(cfg Config, j *job.Job, profile encode.Profile, base string, sourceSize int64) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%t\x00%t\x00%s\x00%d",
+		profile.Hash(), cfg.Backend, j.ForceEncode, j.Software, base, sourceSize))
+	return hex.EncodeToString(sum[:])
+}
+
+// loadEncoded returns the earlier encode only if it matches key and every file
+// it lists is still there.
+func loadEncoded(outDir, key string) *encoded {
+	data, err := os.ReadFile(filepath.Join(outDir, encodedName))
+	if err != nil {
+		return nil
+	}
+	var e encoded
+	if err := json.Unmarshal(data, &e); err != nil || e.Key != key || len(e.Names) == 0 {
+		return nil
+	}
+	for _, name := range e.Names {
+		if !filepath.IsLocal(name) || name == ManifestName || name == encodedName {
+			return nil
+		}
+		if info, err := os.Stat(filepath.Join(outDir, name)); err != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+	}
+	return &e
+}
+
+// saveEncoded writes the marker by rename, so a crash never leaves a partial one.
+func saveEncoded(outDir string, e *encoded) error {
+	data, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(outDir, encodedName+".tmp")
+	if err := os.WriteFile(tmp, data, 0o640); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(outDir, encodedName))
 }
 
 // logRate records transfer speed in the job's log, which is how the transfer

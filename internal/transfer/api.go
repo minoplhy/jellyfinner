@@ -20,6 +20,10 @@ const (
 	chunkSize      = 32 << 20
 	maxAttempts    = 6
 	firstRetryWait = time.Second
+
+	// minUploadChunk is the smallest upload request tried after 413 replies.
+	// It is well under nginx's default 1 MB body limit.
+	minUploadChunk = 256 << 10
 )
 
 // API moves files through the control API over HTTP. Parallel connections
@@ -32,6 +36,11 @@ type API struct {
 
 	// RetryWait replaces the first retry delay in tests.
 	RetryWait time.Duration
+
+	// uploadChunk is the largest upload request to send. It starts at
+	// chunkSize and halves on each 413. One API serves one job, so the limit
+	// is learned once and the job's later files use it at once.
+	uploadChunk int64
 }
 
 func (a *API) wait(ctx context.Context, attempt int) error {
@@ -194,7 +203,9 @@ func loadChunks(path string) (map[int]bool, error) {
 	return done, lines.Err()
 }
 
-// Push uploads a file, continuing from what arrived if the connection drops.
+// Push uploads a file in pieces of at most uploadChunk bytes, continuing from
+// what arrived if the connection drops. A 413 halves the piece and tries again
+// at once, so a reverse proxy's body size limit cannot fail the job.
 func (a *API) Push(ctx context.Context, j *job.Job, local, name string) error {
 	f, err := os.Open(local)
 	if err != nil {
@@ -206,15 +217,27 @@ func (a *API) Push(ctx context.Context, j *job.Job, local, name string) error {
 		return err
 	}
 	size := info.Size()
+	if a.uploadChunk == 0 {
+		a.uploadChunk = chunkSize
+	}
 	var offset int64
 	// Attempts only count failures without progress. A large file on a poor link
 	// may drop many times, and losing it means encoding the title again.
-	for attempt := 0; ; attempt++ {
-		sent := offset
-		err := a.Client.Upload(ctx, j.ID, a.Lease, name, offset, io.NewSectionReader(f, offset, size-offset), size-offset)
-		if err == nil || errors.Is(err, control.ErrLeaseLost) || ctx.Err() != nil {
+	for attempt := 0; ; {
+		length := min(a.uploadChunk, size-offset)
+		err := a.Client.Upload(ctx, j.ID, a.Lease, name, offset, io.NewSectionReader(f, offset, length), length)
+		if err == nil {
+			offset += length
+			if offset >= size {
+				return nil
+			}
+			attempt = 0
+			continue
+		}
+		if errors.Is(err, control.ErrLeaseLost) || ctx.Err() != nil {
 			return err
 		}
+		sent := offset
 		// A failed check keeps the old offset. The server refuses a mismatch,
 		// and offset 0 is always safe.
 		held, oerr := a.Client.UploadOffset(ctx, j.ID, a.Lease, name)
@@ -226,6 +249,13 @@ func (a *API) Push(ctx context.Context, j *job.Job, local, name string) error {
 		} else if oerr == nil {
 			offset = 0
 		}
+		if errors.Is(err, control.ErrTooLarge) {
+			if a.uploadChunk <= minUploadChunk {
+				return fmt.Errorf("upload of %s: something in front of the orchestrator, usually a reverse proxy, refuses even %d byte requests; raise its body size limit, such as nginx client_max_body_size: %w", name, a.uploadChunk, err)
+			}
+			a.uploadChunk = max(a.uploadChunk/2, minUploadChunk)
+			continue
+		}
 		if offset > sent {
 			attempt = 0
 		}
@@ -235,5 +265,6 @@ func (a *API) Push(ctx context.Context, j *job.Job, local, name string) error {
 		if werr := a.wait(ctx, attempt); werr != nil {
 			return werr
 		}
+		attempt++
 	}
 }

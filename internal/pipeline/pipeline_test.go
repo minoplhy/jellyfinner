@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -353,5 +354,69 @@ func TestCheckScratchCountsHeldSource(t *testing.T) {
 	}
 	if err := checkScratch(t.TempDir(), 100, 100); err != nil {
 		t.Errorf("a held source needs no extra room for itself: %v", err)
+	}
+}
+
+// failingPush pulls through the real transfer, and fails every push while fail
+// is set.
+type failingPush struct {
+	transfer.Transfer
+	fail bool
+}
+
+func (f *failingPush) Push(ctx context.Context, j *job.Job, local, name string) error {
+	if f.fail {
+		return errors.New("upload refused")
+	}
+	return f.Transfer.Push(ctx, j, local, name)
+}
+
+func TestRetryReusesEncode(t *testing.T) {
+	requireTools(t)
+	source := filepath.Join(t.TempDir(), "source.mkv")
+	makeSource(t, source)
+	cfg := testConfig(t, encode.BackendSoftware)
+	flaky := &failingPush{Transfer: cfg.Transfer, fail: true}
+	cfg.Transfer = flaky
+	j := testJob(t, source)
+
+	if _, err := Run(context.Background(), cfg, j, &bytes.Buffer{}, nil); err == nil {
+		t.Fatal("want the push to fail")
+	}
+
+	// No working ffmpeg or ffprobe, so only a reused encode can succeed.
+	flaky.fail = false
+	cfg.FFmpeg, cfg.FFprobe = "false", "false"
+	var log bytes.Buffer
+	manifest, err := Run(context.Background(), cfg, j, &log, nil)
+	if err != nil {
+		t.Fatalf("retry encoded again instead of reusing: %v\n%s", err, log.String())
+	}
+	if len(manifest.Files) != 2 || manifest.Backend != encode.BackendSoftware {
+		t.Errorf("manifest = %+v", manifest)
+	}
+	if _, err := os.Stat(filepath.Join(j.Incoming, j.ID, ManifestName)); err != nil {
+		t.Errorf("manifest not pushed: %v", err)
+	}
+}
+
+func TestRetryEncodesAgainWhenSettingsChange(t *testing.T) {
+	requireTools(t)
+	source := filepath.Join(t.TempDir(), "source.mkv")
+	makeSource(t, source)
+	cfg := testConfig(t, encode.BackendSoftware)
+	flaky := &failingPush{Transfer: cfg.Transfer, fail: true}
+	cfg.Transfer = flaky
+	j := testJob(t, source)
+
+	if _, err := Run(context.Background(), cfg, j, &bytes.Buffer{}, nil); err == nil {
+		t.Fatal("want the push to fail")
+	}
+
+	flaky.fail = false
+	cfg.FFmpeg = "false"
+	j.ForceEncode = true
+	if _, err := Run(context.Background(), cfg, j, &bytes.Buffer{}, nil); err == nil {
+		t.Fatal("a changed job must encode again, which fails without ffmpeg")
 	}
 }

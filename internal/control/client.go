@@ -79,6 +79,10 @@ func CheckAlive(maxAge time.Duration) error {
 // stop and drop its result.
 var ErrLeaseLost = errors.New("lease lost")
 
+// ErrTooLarge means something on the path, usually a reverse proxy, refused
+// the request body as too large. Smaller requests can still get through.
+var ErrTooLarge = errors.New("request body too large")
+
 // Headers used by file transfers.
 const (
 	LeaseHeader  = "X-Job-Lease"
@@ -142,6 +146,9 @@ func (c *Client) transferRequest(ctx context.Context, method, path, lease string
 func transferError(path string, resp *http.Response) error {
 	if resp.StatusCode == http.StatusConflict {
 		return ErrLeaseLost
+	}
+	if resp.StatusCode == http.StatusRequestEntityTooLarge {
+		return fmt.Errorf("control api %s: %s: %w", path, resp.Status, ErrTooLarge)
 	}
 	return fmt.Errorf("control api %s: %s", path, resp.Status)
 }
