@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
-	"sort"
 	"strings"
 
 	"jellyfinner/internal/config"
@@ -143,14 +142,6 @@ func (s *Service) EditNode(id string, e NodeEdit) (model.Node, []string, error) 
 			return old, nil, err
 		}
 		n.Name = *e.Name
-		if n.Edge() {
-			for user, edge := range s.Cfg.EdgeViewers {
-				if edge == old.Name {
-					warnings = append(warnings, fmt.Sprintf("EDGE_VIEWERS still sends %s to %s: change it to %s", user, old.Name, n.Name))
-				}
-			}
-			sort.Strings(warnings)
-		}
 	}
 	if e.Allow != nil {
 		if n.Allow, err = config.ParsePrefixes(*e.Allow); err != nil {

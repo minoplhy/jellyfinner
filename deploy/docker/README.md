@@ -74,9 +74,19 @@ docker compose exec orchestrator orchestrator node remove worker1
 
 `node edit` changes only what you give it, and the Nodes page has an Edit button for the same. The node keeps its token and signing key, so nothing changes in its compose file:
 
-- **Name:** jobs, usage history and cached titles follow the node through a rename, because they refer to its ID, shown by `node list`. `EDGE_VIEWERS` names edge nodes, so after renaming one, change it there too.
+- **Name:** jobs, usage history and cached titles follow the node through a rename, because they refer to its ID, shown by `node list`. So do an edge node's viewers.
 - **Allowed addresses:** `--allow ""` accepts any address.
 - **Edge URL and quota:** a new URL, such as moving the node under a path behind your proxy, is used for the next redirect and health probe. A smaller quota removes nothing; the node just caches no new title until it holds less.
+
+**Viewers** are the Jellyfin users the router sends to an edge node. Assign them on the edge node's Edit page, picked from Jellyfin's user list, or from the CLI:
+
+```sh
+docker compose exec orchestrator orchestrator edge assign alice --node edge1
+docker compose exec orchestrator orchestrator edge viewers
+docker compose exec orchestrator orchestrator edge unassign alice
+```
+
+A user goes to one edge node at most; assigning them again moves them. Changes reach the router within about 10 seconds. `EDGE_VIEWERS` is no longer read: if your compose file still sets it, the orchestrator, the router and `doctor` say so. Assign those viewers here, then delete the line.
 
 Rented servers' nodes are managed by the cloud scaler and cannot be edited. Names starting with `cloud-` are kept for them.
 

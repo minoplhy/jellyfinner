@@ -84,13 +84,15 @@ func errText(err error) string {
 
 func TestEditEdgeNode(t *testing.T) {
 	f := newFixture(t)
-	f.cfg.EdgeViewers = map[string]string{"alice": "edge1", "bob": "edge1", "carol": "other"}
 	added, err := f.svc.AddNode(NodeSpec{Name: "edge1", Edge: true, URL: "https://edge1.example.com", QuotaGB: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
 	id := added.Node.ID
 	if err := f.store.AddPlacement(&model.Placement{Node: id, SHA256: strings.Repeat("a", 64), Output: "a.mp4", Size: 3e9}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.AssignViewer("alice", id); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,13 +103,13 @@ func TestEditEdgeNode(t *testing.T) {
 	if n.ID != id || n.Name != "edge-paris" || n.URL != "https://example.com/edge1" || n.QuotaBytes != 2e9 || n.SigningKey != added.SigningKey {
 		t.Errorf("edited = %+v", n)
 	}
-	if len(warnings) != 3 || !strings.Contains(warnings[0], "alice") || !strings.Contains(warnings[1], "bob") ||
-		!strings.Contains(warnings[2], "more than the new quota") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "more than the new quota") {
 		t.Errorf("warnings = %q", warnings)
 	}
-	// Placements follow the ID through the rename.
+	// Placements and viewers follow the ID through the rename.
 	rows, err := f.svc.NodeRows()
-	if err != nil || len(rows) != 1 || rows[0].Name != "edge-paris" || rows[0].Used != 3e9 || len(rows[0].Placements) != 1 {
+	if err != nil || len(rows) != 1 || rows[0].Name != "edge-paris" || rows[0].Used != 3e9 || len(rows[0].Placements) != 1 ||
+		len(rows[0].Viewers) != 1 || rows[0].Viewers[0] != "alice" {
 		t.Errorf("rows = %+v, %v", rows, err)
 	}
 
@@ -116,6 +118,59 @@ func TestEditEdgeNode(t *testing.T) {
 	}
 	if _, _, err := f.svc.EditNode(id, NodeEdit{QuotaGB: ptr(int64(0))}); err == nil {
 		t.Error("a quota must be positive")
+	}
+}
+
+func TestAssignViewers(t *testing.T) {
+	f := newFixture(t)
+	edge1, err := f.svc.AddNode(NodeSpec{Name: "edge1", Edge: true, URL: "https://e1.example.com", QuotaGB: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge2, err := f.svc.AddNode(NodeSpec{Name: "edge2", Edge: true, URL: "https://e2.example.com", QuotaGB: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := f.svc.AddNode(NodeSpec{Name: "worker1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if from, err := f.svc.AssignViewer(" alice ", edge1.Node.ID); err != nil || from != "" {
+		t.Fatalf("assign = %q, %v", from, err)
+	}
+	if from, err := f.svc.AssignViewer("Alice", edge2.Node.ID); err != nil || from != "edge1" {
+		t.Errorf("move = %q, %v", from, err)
+	}
+	if got := f.svc.EdgeViewers(edge1.Node.ID); len(got) != 0 {
+		t.Errorf("edge1 viewers after the move = %v", got)
+	}
+	if got := f.svc.EdgeViewers(edge2.Node.ID); len(got) != 1 || got[0] != "Alice" {
+		t.Errorf("edge2 viewers = %v", got)
+	}
+	for _, c := range []struct{ user, node, want string }{
+		{"", edge1.Node.ID, "username"},
+		{"bob", worker.Node.ID, "only be sent to an edge"},
+		{"bob", "nowhere", "not found"},
+	} {
+		if _, err := f.svc.AssignViewer(c.user, c.node); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("assign %q to %s: %v, want %q", c.user, c.node, err, c.want)
+		}
+	}
+	if err := f.svc.UnassignViewer("ALICE"); err != nil {
+		t.Errorf("unassign: %v", err)
+	}
+	if err := f.svc.UnassignViewer("alice"); err == nil {
+		t.Error("unassigning twice must fail")
+	}
+	// Removing an edge sends its viewers back to the origin.
+	if _, err := f.svc.AssignViewer("carol", edge1.Node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Nodes.Remove(edge1.Node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if v := f.svc.Nodes.Viewers(); len(v) != 0 {
+		t.Errorf("viewers after removing their edge = %+v", v)
 	}
 }
 

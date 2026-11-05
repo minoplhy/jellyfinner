@@ -27,9 +27,44 @@
   {{if .Edge}}
   <li>A new URL is used for the next redirect and health probe. Your proxy must already serve the node there; a path such as <code>https://example.com/edge1</code> needs nothing on the node.</li>
   <li>A smaller quota removes nothing. No new title is cached here until the node holds less.</li>
-  {{if .Viewers}}<li><code>EDGE_VIEWERS</code> sends {{range $i, $v := .Viewers}}{{if $i}}, {{end}}{{$v}}{{end}} here by name. After a rename, change it there too and restart.</li>{{end}}
   {{end}}
 </ul>
+{{if .Edge}}
+<h2 id="viewers">Viewers</h2>
+<p class="muted small">The router sends these Jellyfin users to {{.Name}} for titles cached here; everyone else, and anything not cached, plays from the origin. Changes take effect within seconds.</p>
+<div class="panel flush">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Jellyfin user</th><th></th></tr></thead>
+    <tbody>
+    {{$csrf := .CSRF}}{{$id := .ID}}
+    {{range .Viewers}}
+    <tr><td>{{.}}</td>
+      <td class="actions"><form method="post" action="{{base}}/nodes/{{$id}}/viewers/remove">
+        <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="username" value="{{.}}">
+        <button class="small quiet danger">Remove</button></form></td></tr>
+    {{else}}<tr><td class="empty" colspan="2">No viewers yet, so nobody is sent here.</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+<div class="panel">
+  <form method="post" action="{{base}}/nodes/{{.ID}}/viewers/add">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="form-grid">
+      {{if .Users}}
+      <label>Add a viewer <select name="username" required>
+        {{range .Users}}<option value="{{.Name}}">{{.Name}}{{with .Elsewhere}} (now on {{.}}){{end}}</option>{{end}}
+      </select></label>
+      {{else}}
+      <label>Add a viewer <input type="text" name="username" required placeholder="Jellyfin username"></label>
+      {{end}}
+    </div>
+    <div class="form-actions"><button class="primary">Add viewer</button>
+      <span class="muted small">{{if .UsersErr}}Jellyfin's user list is unavailable ({{.UsersErr}}), so type the username as it signs in.{{else if not .Users}}Every Jellyfin user already goes here.{{else}}A user on another edge node moves here.{{end}}</span></div>
+  </form>
+</div>
+{{end}}
 {{end}}
 {{end}}
 {{end}}

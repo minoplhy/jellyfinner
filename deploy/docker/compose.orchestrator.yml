@@ -42,8 +42,6 @@ x-app: &app
     # such as https://example.com/jellyfinner-admin. An https address always
     # marks the login cookie secure, so leave it unset for plain http.
     # ADMIN_URL: https://admin.example.com
-    # Edge delivery: alice=edge1;bob=edge1
-    EDGE_VIEWERS: ""
     # Cloud workers, optional: rent servers by the hour when the queue backs up.
     # List only the providers you add, in the order to try them. There is no
     # default order. See "Cloud workers" in deploy/docker/README.md.

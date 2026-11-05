@@ -909,3 +909,39 @@ func mustLease(t *testing.T, s database.Store, id string) string {
 	}
 	return j.LeaseID
 }
+
+func (x suite) TestEdgeViewers(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	for _, id := range []string{"e1", "e2"} {
+		if err := s.AddNode(&model.Node{ID: id, Name: id, Kind: model.NodeEdge, TokenHash: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetViewer("alice", "e1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetViewer("bob", "e1"); err != nil {
+		t.Fatal(err)
+	}
+	// Assigning again moves the user; case does not make a second one.
+	if err := s.SetViewer("Alice", "e2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Viewers()
+	want := []model.Viewer{{Username: "Alice", Node: "e2"}, {Username: "bob", Node: "e1"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Viewers = %+v, %v", got, err)
+	}
+	if err := s.RemoveViewer("ALICE"); err != nil {
+		t.Errorf("remove: %v", err)
+	}
+	if err := s.RemoveViewer("alice"); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("remove twice: %v", err)
+	}
+	if err := s.RemoveNode("e1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Viewers(); err != nil || len(got) != 0 {
+		t.Errorf("a removed edge kept its viewers: %+v, %v", got, err)
+	}
+}

@@ -188,6 +188,16 @@ type NodeStore interface {
 	LoadNodes() ([]model.Node, error)
 	// NodeNames maps every node ID to its name, removed nodes included.
 	NodeNames() (map[string]string, error)
+
+	// SetViewer sends a Jellyfin user to an edge node, by ID, moving them
+	// from any other. Usernames match without regard to case.
+	SetViewer(username, node string) error
+	// RemoveViewer sends a user back to the origin, or returns
+	// model.ErrNotFound.
+	RemoveViewer(username string) error
+	// Viewers lists every assignment, by username. RemoveNode deletes a
+	// node's assignments.
+	Viewers() ([]model.Viewer, error)
 }
 
 // PlacementStore tracks encoded files on edge nodes, and what the nodes report.

@@ -27,9 +27,13 @@ import (
 
 type fakeAuth struct {
 	jellyfintest.Unimplemented
-	ended []string
-	calls int
+	ended    []string
+	calls    int
+	users    []string
+	usersErr error
 }
+
+func (f *fakeAuth) Users(context.Context) ([]string, error) { return f.users, f.usersErr }
 
 func (f *fakeAuth) Authenticate(_ context.Context, username, password string) (bool, string, error) {
 	f.calls++
@@ -187,7 +191,7 @@ func TestEveryPageNeedsLogin(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"/library/add", "/library/reencode", "/library/reencode/confirm", "/jobs/x/cancel", "/jobs/x/requeue", "/logout",
-		"/scan", "/backfill/start", "/nodes/add", "/nodes/worker1/rotate", "/nodes/worker1/delete", "/nodes/worker1/pause", "/nodes/worker1/edit", "/cloud/pause", "/cloud/servers/x/drain"} {
+		"/scan", "/backfill/start", "/nodes/add", "/nodes/worker1/rotate", "/nodes/worker1/delete", "/nodes/worker1/pause", "/nodes/worker1/edit", "/nodes/edge1/viewers/add", "/cloud/pause", "/cloud/servers/x/drain"} {
 		got, _ := f.post(c, path, url.Values{})
 		if got != http.StatusUnauthorized {
 			t.Errorf("POST %s = %d", path, got)

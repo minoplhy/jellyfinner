@@ -86,6 +86,7 @@ orchestrator node add worker2
 orchestrator node list
 orchestrator node edit worker2 --name gpu-box --allow 10.8.0.0/24   # token and keys stay; edges also take --url and --quota-gb
 orchestrator node rotate worker2
+orchestrator edge assign alice --node edge1   # the router sends alice to edge1; also on the edge's Edit page
 orchestrator node remove worker2
 orchestrator node pause worker2        # finishes its job, then takes no more
 orchestrator node resume worker2

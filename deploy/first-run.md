@@ -91,7 +91,7 @@ docker compose exec orchestrator orchestrator edge list
 
 ## 6. Router
 
-Set `EDGE_VIEWERS: testuser=edge1`, uncomment the `router` block, and run `docker compose up -d`. Keep your public hostname pointed at Jellyfin for now, and test against port 8204.
+Assign the test user to the edge node, on its Edit page under Viewers, or with `docker compose exec orchestrator orchestrator edge assign testuser --node edge1`. Uncomment the `router` block, and run `docker compose up -d`. Keep your public hostname pointed at Jellyfin for now, and test against port 8204.
 
 **Check:** with the test user's token, a stream request returns a 302 to the edge node:
 
@@ -100,7 +100,7 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' \
   "http://127.0.0.1:8204/Videos/ITEM_ID/stream.mp4?Static=true&ApiKey=USER_TOKEN"
 ```
 
-Then point the public hostname at the router, add that address to Jellyfin's known proxies, and test on your real apps, including seeking and resume. An app that fails on the redirect stays on the origin: remove that viewer from `EDGE_VIEWERS`.
+Then point the public hostname at the router, add that address to Jellyfin's known proxies, and test on your real apps, including seeking and resume. An app that fails on the redirect stays on the origin: remove that viewer from the edge node, which takes effect within seconds.
 
 ## 7. Failure drills
 

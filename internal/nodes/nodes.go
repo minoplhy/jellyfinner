@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,9 +25,10 @@ type Registry struct {
 	store database.NodeStore
 	now   func() time.Time
 
-	mu    sync.Mutex
-	nodes []model.Node
-	until time.Time
+	mu      sync.Mutex
+	nodes   []model.Node
+	viewers []model.Viewer
+	until   time.Time
 }
 
 // New returns a Registry. A nil clock means time.Now.
@@ -130,13 +132,63 @@ func (r *Registry) forget() {
 func (r *Registry) All() []model.Node {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if now := r.now(); now.After(r.until) {
-		if nodes, err := r.store.LoadNodes(); err == nil {
-			r.nodes = nodes
-			r.until = now.Add(cacheFor)
+	r.refresh()
+	return r.nodes
+}
+
+// refresh reloads nodes and viewers together once the cache is old. The
+// caller holds mu.
+func (r *Registry) refresh() {
+	now := r.now()
+	if !now.After(r.until) {
+		return
+	}
+	nodes, err := r.store.LoadNodes()
+	if err != nil {
+		return
+	}
+	viewers, err := r.store.Viewers()
+	if err != nil {
+		return
+	}
+	r.nodes, r.viewers, r.until = nodes, viewers, now.Add(cacheFor)
+}
+
+// Viewers returns every viewer assignment, by username.
+func (r *Registry) Viewers() []model.Viewer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refresh()
+	return r.viewers
+}
+
+// ViewerEdge returns the live edge node a Jellyfin user is sent to, or nil.
+// Usernames match without regard to case, as Jellyfin logins do.
+func (r *Registry) ViewerEdge(username string) *model.Node {
+	for _, v := range r.Viewers() {
+		if strings.EqualFold(v.Username, username) {
+			return r.Edge(v.Node)
 		}
 	}
-	return r.nodes
+	return nil
+}
+
+// SetViewer sends a user to an edge node, by ID.
+func (r *Registry) SetViewer(username, node string) error {
+	if err := r.store.SetViewer(username, node); err != nil {
+		return err
+	}
+	r.forget()
+	return nil
+}
+
+// RemoveViewer sends a user back to the origin.
+func (r *Registry) RemoveViewer(username string) error {
+	if err := r.store.RemoveViewer(username); err != nil {
+		return err
+	}
+	r.forget()
+	return nil
 }
 
 // Edges returns the nodes that may cache encodes.
@@ -160,7 +212,7 @@ func (r *Registry) Edge(id string) *model.Node {
 	return nil
 }
 
-// EdgeByName finds an edge node by name, as EDGE_VIEWERS gives it.
+// EdgeByName finds an edge node by name, as people type it.
 func (r *Registry) EdgeByName(name string) *model.Node {
 	for _, n := range r.Edges() {
 		if n.Name == name {

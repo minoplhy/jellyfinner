@@ -77,19 +77,17 @@ func TestManualRequiresJellyfinAndWebhook(t *testing.T) {
 	}
 }
 
-func TestEdgeViewers(t *testing.T) {
+// EDGE_VIEWERS is no longer read, even when malformed, but a set value is
+// remembered so the operator is told to move it.
+func TestEdgeViewersIsOnlyNoticed(t *testing.T) {
 	m := base()
-	m["EDGE_VIEWERS"] = "alice=edge1;bob=edge2"
 	c, err := parseMap(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.EdgeViewers["alice"] != "edge1" || c.EdgeViewers["bob"] != "edge2" {
-		t.Errorf("viewers = %+v", c.EdgeViewers)
+	if err != nil || c.LegacyEdgeViewers {
+		t.Fatalf("unset: %v, legacy %v", err, c.LegacyEdgeViewers)
 	}
 	m["EDGE_VIEWERS"] = "alice"
-	if _, err := parseMap(m); err == nil {
-		t.Error("a viewer without a node must be refused")
+	if c, err = parseMap(m); err != nil || !c.LegacyEdgeViewers {
+		t.Errorf("set: %v, legacy %v", err, c.LegacyEdgeViewers)
 	}
 }
 

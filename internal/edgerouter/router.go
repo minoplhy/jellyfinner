@@ -160,7 +160,7 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 	if err != nil {
 		return "", err
 	}
-	node := rt.nodes.EdgeByName(rt.cfg.EdgeViewers[user])
+	node := rt.nodes.ViewerEdge(user)
 	if node == nil {
 		return "", nil
 	}

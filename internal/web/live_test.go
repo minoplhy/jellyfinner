@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -265,7 +266,6 @@ func TestAddRotateAndRemoveNodesFromTheWeb(t *testing.T) {
 
 func TestEditNodesFromTheWeb(t *testing.T) {
 	f := newFixture(t)
-	f.cfg.EdgeViewers = map[string]string{"alice": "edge9"}
 	c := f.admin()
 	token := f.csrf(c)
 	worker, err := f.svc.AddNode(orchestrator.NodeSpec{Name: "worker2"})
@@ -277,6 +277,9 @@ func TestEditNodesFromTheWeb(t *testing.T) {
 		t.Fatal(err)
 	}
 	wid, eid := worker.Node.ID, edge.Node.ID
+	if _, err := f.svc.AssignViewer("alice", eid); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, body := f.get(c, "/nodes"); !strings.Contains(body, "/nodes/"+wid+"/edit") || !strings.Contains(body, "/nodes/"+eid+"/edit") {
 		t.Error("the Nodes page must link to each node's edit page")
@@ -310,8 +313,8 @@ func TestEditNodesFromTheWeb(t *testing.T) {
 	if n := f.svc.Nodes.Edge(eid); n == nil || n.Name != "edge-paris" || n.URL != "https://example.com/edge9" || n.QuotaBytes != 20e9 {
 		t.Errorf("edited edge = %+v", n)
 	}
-	if _, body := f.get(c, "/nodes"); !strings.Contains(body, "flash-warn") || !strings.Contains(body, "EDGE_VIEWERS still sends alice") {
-		t.Error("renaming an edge EDGE_VIEWERS uses must warn")
+	if _, body := f.get(c, "/nodes"); !strings.Contains(body, "Saved edge-paris") || !strings.Contains(body, "alice") {
+		t.Error("a renamed edge keeps its viewers")
 	}
 
 	for _, bad := range []url.Values{
@@ -331,6 +334,65 @@ func TestEditNodesFromTheWeb(t *testing.T) {
 	}
 	if n := f.svc.Nodes.ByID(wid); n == nil || n.Name != "gpu-box" {
 		t.Errorf("a refused edit changed the node: %+v", n)
+	}
+}
+
+func TestEdgeViewersFromTheWeb(t *testing.T) {
+	f := newFixture(t)
+	f.auth.users = []string{"alice", "bob", "carol"}
+	c := f.admin()
+	token := f.csrf(c)
+	e1, err := f.svc.AddNode(orchestrator.NodeSpec{Name: "edge1", Edge: true, URL: "https://e1.example.com", QuotaGB: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, err := f.svc.AddNode(orchestrator.NodeSpec{Name: "edge2", Edge: true, URL: "https://e2.example.com", QuotaGB: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.AssignViewer("bob", e2.Node.ID); err != nil {
+		t.Fatal(err)
+	}
+	page := "/nodes/" + e1.Node.ID + "/edit"
+	add := "/nodes/" + e1.Node.ID + "/viewers/add"
+
+	_, body := f.get(c, page)
+	if !strings.Contains(body, `<option value="alice">alice</option>`) || !strings.Contains(body, "bob (now on edge2)") ||
+		!strings.Contains(body, "No viewers yet") {
+		t.Fatalf("picker: %s", body)
+	}
+	if _, body := f.get(c, "/nodes"); !strings.Contains(body, page+"#viewers") {
+		t.Error("each edge must link to its viewers")
+	}
+
+	if code, _ := f.post(c, add, url.Values{"csrf": {token}, "username": {"alice"}}); code != http.StatusSeeOther {
+		t.Fatalf("add = %d", code)
+	}
+	_, body = f.get(c, page)
+	if !strings.Contains(body, "alice now goes to edge1") || strings.Contains(body, `<option value="alice">`) {
+		t.Errorf("after add: %s", body)
+	}
+	f.post(c, add, url.Values{"csrf": {token}, "username": {"bob"}})
+	if _, body = f.get(c, page); !strings.Contains(body, "bob moved from edge2 to edge1") {
+		t.Errorf("after move: %s", body)
+	}
+	if v := f.svc.EdgeViewers(e1.Node.ID); len(v) != 2 {
+		t.Errorf("edge1 viewers = %v", v)
+	}
+
+	f.post(c, "/nodes/"+e1.Node.ID+"/viewers/remove", url.Values{"csrf": {token}, "username": {"alice"}})
+	if _, body = f.get(c, page); !strings.Contains(body, "alice stays on the origin") {
+		t.Errorf("after remove: %s", body)
+	}
+	f.post(c, add, url.Values{"csrf": {token}, "username": {""}})
+	if _, body = f.get(c, page); !strings.Contains(body, "flash-error") {
+		t.Error("an empty username must be refused")
+	}
+
+	// Without Jellyfin's list, a text box stands in.
+	f.auth.usersErr = errors.New("jellyfin down")
+	if _, body = f.get(c, page); !strings.Contains(body, `<input type="text" name="username"`) || !strings.Contains(body, "jellyfin down") {
+		t.Errorf("fallback: %s", body)
 	}
 }
 

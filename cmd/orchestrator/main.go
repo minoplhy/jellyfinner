@@ -60,6 +60,9 @@ const usage = `usage: orchestrator [--env FILE] COMMAND
   edge list
   edge pin SOURCE --node NODE
   edge unpin SOURCE --node NODE [--force]
+  edge viewers                 which Jellyfin users the router sends to which edge node
+  edge assign USER --node NODE sends a user to an edge node, moving them from any other
+  edge unassign USER           sends a user back to the origin
   queue list
   queue add SOURCE
   queue reencode SOURCE --reason TEXT [--force-encode] [--software]
@@ -297,6 +300,9 @@ func serve(envFile string) error {
 	if nodes, err := store.LoadNodes(); err == nil && len(nodes) == 0 {
 		logger.Print("no nodes yet: add a worker with orchestrator node add NAME")
 	}
+	if cfg.LegacyEdgeViewers {
+		logger.Print(orchestrator.LegacyViewersNote)
+	}
 
 	select {
 	case err = <-serveErr:
@@ -412,7 +418,7 @@ func backfillCommand(envFile string, args []string) error {
 
 func edgeCommand(envFile string, args []string) error {
 	if len(args) == 0 {
-		return errors.New("edge needs list, pin or unpin")
+		return errors.New("edge needs list, pin, unpin, viewers, assign or unassign")
 	}
 	cfg, store, err := open(envFile)
 	if err != nil {
@@ -420,6 +426,12 @@ func edgeCommand(envFile string, args []string) error {
 	}
 	defer store.Close()
 	svc := orchestrator.New(cfg, store, notify.New("", ""), nil, log.Default())
+	switch args[0] {
+	case "viewers":
+		return listViewers(svc)
+	case "assign", "unassign":
+		return assignViewer(svc, args[0] == "assign", args[1:])
+	}
 	if args[0] == "list" {
 		rows, err := svc.NodeRows()
 		if err != nil {
@@ -454,6 +466,53 @@ func edgeCommand(envFile string, args []string) error {
 		return svc.Pin(args[1], n.ID)
 	}
 	return svc.Unpin(args[1], n.ID, *force)
+}
+
+func listViewers(svc *orchestrator.Service) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "USER\tEDGE")
+	viewers := svc.Nodes.Viewers()
+	for _, v := range viewers {
+		fmt.Fprintf(w, "%s\t%s\n", v.Username, svc.NodeName(v.Node))
+	}
+	if len(viewers) == 0 {
+		fmt.Fprintln(w, "(nobody: every viewer plays from the origin)")
+	}
+	return w.Flush()
+}
+
+// assignViewer takes USER first, then --node, as pin does with SOURCE.
+func assignViewer(svc *orchestrator.Service, assign bool, args []string) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return errors.New("edge assign and unassign need a USER")
+	}
+	user := args[0]
+	if !assign {
+		if err := svc.UnassignViewer(user); err != nil {
+			return err
+		}
+		fmt.Printf("%s plays from the origin now.\n", user)
+		return nil
+	}
+	fs := flag.NewFlagSet("edge assign", flag.ExitOnError)
+	node := fs.String("node", "", "edge node")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	n, err := svc.FindNode(*node)
+	if err != nil {
+		return err
+	}
+	from, err := svc.AssignViewer(user, n.ID)
+	if err != nil {
+		return err
+	}
+	if from != "" {
+		fmt.Printf("%s moved from %s to %s. The router uses it within seconds.\n", user, from, n.Name)
+	} else {
+		fmt.Printf("%s now goes to %s. The router uses it within seconds.\n", user, n.Name)
+	}
+	return nil
 }
 
 func queueCommand(envFile string, args []string) error {

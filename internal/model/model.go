@@ -147,6 +147,13 @@ type Node struct {
 // Edge reports whether this node caches encodes.
 func (n *Node) Edge() bool { return n.Kind == NodeEdge }
 
+// Viewer sends one Jellyfin user to an edge node, by the edge's ID. Usernames
+// match without regard to case, as Jellyfin logins do.
+type Viewer struct {
+	Username string
+	Node     string
+}
+
 // Placement is one encoded file on one edge node. Files are identified by
 // content hash, so a re-encode can never be served from a stale copy.
 type Placement struct {

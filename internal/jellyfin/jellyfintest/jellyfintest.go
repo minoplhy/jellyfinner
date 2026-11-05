@@ -34,3 +34,4 @@ func (Unimplemented) ClearPlayed(context.Context, string, string) error { return
 func (Unimplemented) SendMessage(context.Context, string, string, string) error {
 	return ErrNotFaked
 }
+func (Unimplemented) Users(context.Context) ([]string, error) { return nil, ErrNotFaked }

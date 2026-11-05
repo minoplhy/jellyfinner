@@ -153,6 +153,21 @@ func TestEditArrivesWithTheCache(t *testing.T) {
 	if n := s.ByID(id); n == nil || s.ByToken("t") == nil {
 		t.Error("the token must keep working through an edit")
 	}
+	// A viewer assigned elsewhere arrives with the cache, by ID, so the
+	// renamed edge is found.
+	if err := other.SetViewer("alice", id); err != nil {
+		t.Fatal(err)
+	}
+	if s.ViewerEdge("alice") != nil {
+		t.Error("the cache should not have the viewer yet")
+	}
+	now = now.Add(cacheFor + time.Second)
+	if n := s.ViewerEdge("ALICE"); n == nil || n.Name != "edge-paris" {
+		t.Errorf("ViewerEdge = %+v", n)
+	}
+	if s.ViewerEdge("bob") != nil {
+		t.Error("an unassigned viewer must stay on the origin")
+	}
 }
 
 func TestEnsureSecretSurvivesRestart(t *testing.T) {

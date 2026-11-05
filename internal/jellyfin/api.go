@@ -22,6 +22,8 @@ type API interface {
 	ClearPlayed(ctx context.Context, itemID, userID string) error
 	// SendMessage shows a message in one client session.
 	SendMessage(ctx context.Context, sessionID, header, text string) error
+	// Users lists every user's name, sorted.
+	Users(ctx context.Context) ([]string, error)
 }
 
 var _ API = (*Client)(nil)

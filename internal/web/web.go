@@ -199,6 +199,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /nodes/{node}/delete", s.protected(s.nodeDelete))
 	mux.HandleFunc("GET /nodes/{node}/edit", s.protected(s.nodeEditPage))
 	mux.HandleFunc("POST /nodes/{node}/edit", s.protected(s.nodeEdit))
+	mux.HandleFunc("POST /nodes/{node}/viewers/{action}", s.protected(s.nodeViewer))
 	mux.HandleFunc("POST /nodes/{node}/{action}", s.protected(s.nodePause))
 	mux.HandleFunc("GET /usage", s.protected(s.usagePage))
 	mux.HandleFunc("GET /fragments/usage", s.protected(s.usageFragment))

@@ -174,6 +174,11 @@ var migrations = []string{
 	ALTER TABLE nodes_v4 RENAME TO nodes;
 	CREATE UNIQUE INDEX nodes_live_name ON nodes (name) WHERE removed = 0;
 	CREATE INDEX jobs_node ON jobs (node, state);`,
+	// 5: which Jellyfin users the router sends to which edge node, by ID.
+	`CREATE TABLE edge_viewers (
+		username TEXT PRIMARY KEY COLLATE NOCASE,
+		node     TEXT NOT NULL
+	);`,
 }
 
 // migrate applies whichever steps this database has not had. The transaction

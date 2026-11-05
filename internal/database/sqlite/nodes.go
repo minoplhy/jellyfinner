@@ -71,6 +71,9 @@ func (s *Store) RemoveNode(id string) error {
 		if _, err := tx.Exec(`DELETE FROM placements WHERE node = ?`, id); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(`DELETE FROM edge_viewers WHERE node = ?`, id); err != nil {
+			return err
+		}
 		_, err = tx.Exec(`DELETE FROM edge_status WHERE node = ?`, id)
 		return err
 	})

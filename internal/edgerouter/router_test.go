@@ -79,11 +79,11 @@ func newFixtureAt(t *testing.T, base string) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{
-		LibraryDir: "/lib", EdgeURLTTL: 24 * time.Hour,
-		EdgeViewers: map[string]string{"alice": "edge1"},
-	}
+	cfg := &config.Config{LibraryDir: "/lib", EdgeURLTTL: 24 * time.Hour}
 	if err := store.AddNode(&model.Node{ID: "edge1", Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", SigningKey: sign}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetViewer("alice", "edge1"); err != nil {
 		t.Fatal(err)
 	}
 	f.router = NewRouter(cfg, store, f.jf, u, log.New(io.Discard, "", 0))
@@ -146,6 +146,28 @@ func TestRedirectsAssignedViewer(t *testing.T) {
 	}
 	if ps, _ := f.store.NodePlacements("edge1"); ps[0].LastPlayed == 0 {
 		t.Error("the play was not recorded")
+	}
+}
+
+// Viewers refer to the edge by ID, so a rename and a new URL change nothing
+// but where the redirect points. Usernames match without regard to case.
+func TestViewerFollowsAnEditedEdge(t *testing.T) {
+	f := newFixture(t)
+	if err := f.store.SetViewer("BOB", "edge1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.UpdateNode(&model.Node{ID: "edge1", Name: "edge-paris", URL: "https://example.com/edge1"}); err != nil {
+		t.Fatal(err)
+	}
+	f.cached()
+	for _, token := range []string{"alice-token", "bob-token"} {
+		w := f.get(stream(token), nil)
+		if loc := w.Header().Get("Location"); w.Code != http.StatusFound || !strings.HasPrefix(loc, "https://example.com/edge1/e/"+hash+".mp4?md5=") {
+			t.Errorf("%s: %d %s", token, w.Code, loc)
+		}
+	}
+	if err := f.store.RemoveViewer("bob"); err != nil {
+		t.Fatal(err)
 	}
 }
 

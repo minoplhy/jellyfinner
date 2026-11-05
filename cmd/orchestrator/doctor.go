@@ -53,7 +53,9 @@ func runDoctor(envFile string) error {
 		if err == nil && len(nodes) == 0 {
 			r.Note("no nodes yet: add one with orchestrator node add NAME")
 		}
-		viewerNodes(r, cfg, nodes)
+		if cfg.LegacyEdgeViewers {
+			r.Note(orchestrator.LegacyViewersNote)
+		}
 		checkCloud(r, cfg, store)
 	}
 
@@ -130,18 +132,6 @@ func webhookUnreachable(cfg *config.Config) bool {
 	}
 	addr, err := netip.ParseAddr(host)
 	return err == nil && addr.IsLoopback()
-}
-
-func viewerNodes(r *doctor.Report, cfg *config.Config, nodes []model.Node) {
-	known := map[string]bool{}
-	for _, n := range nodes {
-		known[n.Name] = n.Edge()
-	}
-	for user, node := range cfg.EdgeViewers {
-		if !known[node] {
-			r.Note(fmt.Sprintf("EDGE_VIEWERS sends %s to %s, which is not an edge node, so they stay on the origin", user, node))
-		}
-	}
 }
 
 func checkJellyfin(r *doctor.Report, cfg *config.Config) {

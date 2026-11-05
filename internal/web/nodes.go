@@ -1,9 +1,9 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -320,7 +320,17 @@ type nodeEditData struct {
 	Allow   string
 	URL     string
 	QuotaGB int64
-	Viewers []string // EDGE_VIEWERS users sent here, by name
+
+	// Edge nodes only: the users sent here, and who can be added.
+	Viewers  []string
+	Users    []viewerOption // from Jellyfin; empty when it cannot be asked
+	UsersErr string         // why Jellyfin's user list is missing
+}
+
+// viewerOption is a Jellyfin user in the add-viewer picker.
+type viewerOption struct {
+	Name      string
+	Elsewhere string // the edge this user goes to now, if another
 }
 
 func (s *Server) nodeEditPage(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -332,13 +342,68 @@ func (s *Server) nodeEditPage(w http.ResponseWriter, r *http.Request, sess *sess
 	}
 	d := nodeEditData{CSRF: sess.csrf, ID: n.ID, Name: n.Name, Edge: n.Edge(), Rented: orchestrator.Rented(n),
 		Allow: orchestrator.AllowString(n.Allow), URL: n.URL, QuotaGB: n.QuotaBytes / 1e9}
-	for user, edge := range s.svc.Cfg.EdgeViewers {
-		if n.Edge() && edge == n.Name {
-			d.Viewers = append(d.Viewers, user)
+	if n.Edge() {
+		d.Viewers = s.svc.EdgeViewers(n.ID)
+		d.Users, d.UsersErr = s.viewerOptions(r, n.ID)
+	}
+	s.render(w, sess, "nodeedit", "Edit "+n.Name, d)
+}
+
+// viewerOptions lists Jellyfin users not yet sent to this edge. Jellyfin
+// gets a few seconds; past that the page offers a text box instead.
+func (s *Server) viewerOptions(r *http.Request, edge string) ([]viewerOption, string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	users, err := s.auth.Users(ctx)
+	if err != nil {
+		return nil, err.Error()
+	}
+	assigned := map[string]string{}
+	for _, v := range s.svc.Nodes.Viewers() {
+		assigned[strings.ToLower(v.Username)] = v.Node
+	}
+	var out []viewerOption
+	for _, u := range users {
+		node, ok := assigned[strings.ToLower(u)]
+		switch {
+		case !ok:
+			out = append(out, viewerOption{Name: u})
+		case node != edge:
+			out = append(out, viewerOption{Name: u, Elsewhere: s.svc.NodeName(node)})
 		}
 	}
-	sort.Strings(d.Viewers)
-	s.render(w, sess, "nodeedit", "Edit "+n.Name, d)
+	return out, ""
+}
+
+// nodeViewer adds or removes one viewer of an edge node, as orchestrator
+// edge assign and edge unassign do.
+func (s *Server) nodeViewer(w http.ResponseWriter, r *http.Request, sess *session) {
+	id, action := r.PathValue("node"), r.PathValue("action")
+	user := strings.TrimSpace(r.PostForm.Get("username"))
+	edge := s.svc.NodeName(id)
+	switch action {
+	case "add":
+		from, err := s.svc.AssignViewer(user, id)
+		switch {
+		case err != nil:
+			s.flash(sess, "error", "Could not add "+user+": "+err.Error())
+		case from != "":
+			s.flash(sess, "ok", user+" moved from "+from+" to "+edge+". It takes effect within seconds.")
+		default:
+			s.flash(sess, "ok", user+" now goes to "+edge+". It takes effect within seconds.")
+		}
+	case "remove":
+		if err := s.svc.UnassignViewer(user); err != nil {
+			s.flash(sess, "error", "Could not remove "+user+": "+err.Error())
+		} else {
+			s.flash(sess, "ok", user+" stays on the origin now.")
+		}
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	s.log.Printf("web: %s %s viewer %s on %s", sess.user, action, user, edge)
+	s.redirect(w, r, "/nodes/"+url.PathEscape(id)+"/edit")
 }
 
 // nodeEdit saves the edit form, as orchestrator node edit does. Allowed

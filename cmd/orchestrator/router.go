@@ -14,7 +14,7 @@ import (
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/edgerouter"
 	"jellyfinner/internal/jellyfin"
-	"jellyfinner/internal/nodes"
+	"jellyfinner/internal/orchestrator"
 )
 
 // router runs in its own process, in front of Jellyfin, and sends direct
@@ -40,11 +40,8 @@ func router(envFile string) error {
 	defer store.Close()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	registry := nodes.New(store, nil)
-	for user, node := range cfg.EdgeViewers {
-		if registry.EdgeByName(node) == nil {
-			logger.Printf("EDGE_VIEWERS sends %s to %s, which is not an edge node yet, so they stay on the origin", user, node)
-		}
+	if cfg.LegacyEdgeViewers {
+		logger.Print(orchestrator.LegacyViewersNote)
 	}
 	handler := edgerouter.NewRouter(cfg, store, jellyfin.New(cfg.JellyfinURL, cfg.JellyfinToken), upstream, logger)
 	// No write timeout: viewers fall back to long streams through this proxy.

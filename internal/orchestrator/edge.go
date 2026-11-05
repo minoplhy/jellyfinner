@@ -151,6 +151,52 @@ func (s *Service) probeNodes(ctx context.Context) {
 	}
 }
 
+// LegacyViewersNote is said wherever EDGE_VIEWERS is still set.
+const LegacyViewersNote = "EDGE_VIEWERS is set but no longer read, so it sends nobody to an edge node. " +
+	"Assign viewers on each edge node's Edit page, or with orchestrator edge assign, then remove the variable"
+
+// EdgeViewers lists the users sent to one edge node, by ID.
+func (s *Service) EdgeViewers(edge string) []string {
+	var out []string
+	for _, v := range s.Nodes.Viewers() {
+		if v.Node == edge {
+			out = append(out, v.Username)
+		}
+	}
+	return out
+}
+
+// AssignViewer sends a Jellyfin user to an edge node, by ID, within seconds.
+// It returns the name of the edge the user moved from, if any.
+func (s *Service) AssignViewer(username, edge string) (string, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", errors.New("a viewer needs a Jellyfin username")
+	}
+	n := s.Nodes.Edge(edge)
+	if n == nil {
+		if _, err := s.NodeByID(edge); err == nil {
+			return "", errors.New("viewers can only be sent to an edge node")
+		}
+		return "", fmt.Errorf("edge node %s: %w", edge, model.ErrNotFound)
+	}
+	var from string
+	for _, v := range s.Nodes.Viewers() {
+		if strings.EqualFold(v.Username, username) && v.Node != edge {
+			from = s.NodeName(v.Node)
+		}
+	}
+	if err := s.Nodes.SetViewer(username, edge); err != nil {
+		return "", err
+	}
+	return from, nil
+}
+
+// UnassignViewer sends a user back to the origin.
+func (s *Service) UnassignViewer(username string) error {
+	return s.Nodes.RemoveViewer(strings.TrimSpace(username))
+}
+
 // AllowString writes allowed addresses as node add and node edit take them.
 func AllowString(prefixes []netip.Prefix) string {
 	out := make([]string, len(prefixes))
@@ -209,11 +255,7 @@ func (s *Service) NodeRows() ([]NodeRow, error) {
 			return nil, err
 		}
 		row.Online = edgerouter.Servable(row.Status, s.Now())
-		for user, node := range s.Cfg.EdgeViewers {
-			if node == n.Name {
-				row.Viewers = append(row.Viewers, user)
-			}
-		}
+		row.Viewers = s.EdgeViewers(n.ID)
 		rows = append(rows, row)
 	}
 	return rows, nil

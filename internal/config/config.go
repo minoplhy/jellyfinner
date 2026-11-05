@@ -86,12 +86,13 @@ type Config struct {
 	// BackfillDailyBytes caps how much source data backfill may start per UTC day.
 	BackfillDailyBytes int64
 
-	// EdgeViewers maps a Jellyfin username to its node. EdgeTokenKey comes from
-	// the database, not the environment.
-	EdgeViewers  map[string]string
-	EdgeTokenKey string
-	EdgeURLTTL   time.Duration
-	RouterAddr   string
+	// LegacyEdgeViewers is set when EDGE_VIEWERS is, which is no longer read:
+	// viewers are assigned on the Nodes page or with edge assign. It is kept
+	// only to warn. EdgeTokenKey comes from the database, not the environment.
+	LegacyEdgeViewers bool
+	EdgeTokenKey      string
+	EdgeURLTTL        time.Duration
+	RouterAddr        string
 
 	// AdminAddr enables the admin UI. AdminURL is where people open it, and
 	// its path, such as /jellyfinner-admin, is where the UI is served.
@@ -365,9 +366,7 @@ func parse(get func(string) string) (*Config, error) {
 	if c.TrustedProxies, err = ParsePrefixes(get("TRUSTED_PROXIES")); err != nil {
 		return nil, fmt.Errorf("TRUSTED_PROXIES: %w", err)
 	}
-	if c.EdgeViewers, err = ParseEdgeViewers(get("EDGE_VIEWERS")); err != nil {
-		return nil, err
-	}
+	c.LegacyEdgeViewers = strings.TrimSpace(get("EDGE_VIEWERS")) != ""
 	dailyGB, err := integer(get("BACKFILL_DAILY_GB"), 200)
 	if err != nil {
 		return nil, fmt.Errorf("BACKFILL_DAILY_GB: %w", err)
@@ -533,23 +532,6 @@ func StripPrefix(prefix string, next http.Handler) http.Handler {
 		r2.URL = &u
 		next.ServeHTTP(w, r2)
 	})
-}
-
-// ParseEdgeViewers reads "username=node;...".
-func ParseEdgeViewers(s string) (map[string]string, error) {
-	viewers := map[string]string{}
-	for _, entry := range strings.Split(s, ";") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		user, node, ok := strings.Cut(entry, "=")
-		if !ok || user == "" || node == "" {
-			return nil, fmt.Errorf("EDGE_VIEWERS: entry %q must be username=node", entry)
-		}
-		viewers[user] = node
-	}
-	return viewers, nil
 }
 
 func nested(parent, child string) bool {

@@ -170,7 +170,7 @@
   </div>
   <div class="meta">
     <span><a href="{{.URL}}" rel="noreferrer">{{.URL}}</a></span>
-    <span>Viewers: <b>{{range $i, $v := .Viewers}}{{if $i}}, {{end}}{{$v}}{{else}}none{{end}}</b></span>
+    <span>Viewers: <b>{{range $i, $v := .Viewers}}{{if $i}}, {{end}}{{$v}}{{else}}none{{end}}</b> <a class="small" href="{{base}}/nodes/{{.ID}}/edit#viewers">Manage</a></span>
   </div>
   <div class="meta">
     <div class="gauge">

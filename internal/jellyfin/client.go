@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -130,6 +132,28 @@ func (c *Client) Username(ctx context.Context, token string) (string, error) {
 		return "", err
 	}
 	return me.Name, nil
+}
+
+// Users lists every user's name, sorted, for picking edge viewers. The token
+// must be an API key or an administrator's.
+func (c *Client) Users(ctx context.Context) ([]string, error) {
+	if c.Token == "" {
+		return nil, errors.New("JELLYFIN_TOKEN is not set")
+	}
+	var users []struct {
+		Name string `json:"Name"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/Users", nil, &users); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(users))
+	for _, u := range users {
+		if u.Name != "" {
+			names = append(names, u.Name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
+	return names, nil
 }
 
 // ItemPath returns an item's file path as Jellyfin sees it.
