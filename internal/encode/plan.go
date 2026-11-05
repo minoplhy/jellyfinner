@@ -17,7 +17,7 @@ type Profile struct {
 	AudioKbps    int
 	KeyframeSecs int
 	Languages    []string // audio languages to keep; empty keeps all
-	Device       string   // VAAPI render node
+	Device       string   // VAAPI render node; RKMPP uses fixed device paths
 }
 
 // DefaultProfile is the v1 output profile.

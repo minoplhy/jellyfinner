@@ -40,13 +40,21 @@ services:
       # To encode with a VAAPI GPU, uncomment these and the group_add below.
       # ENCODER: vaapi
       # VAAPI_DEVICE: /dev/dri/renderD128
+      # To encode on a Rockchip board, uncomment this and the RKMPP devices
+      # below. It needs Rockchip's vendor kernel, which provides /dev/mpp_service.
+      # ENCODER: rkmpp
       # To compare rclone in the transfer speed test.
       # TRANSFER: rclone
     volumes: *volumes
     # devices:
     #   - /dev/dri/renderD128:/dev/dri/renderD128
+    #   # RKMPP uses these instead of the line above.
+    #   - /dev/mpp_service:/dev/mpp_service
+    #   - /dev/rga:/dev/rga
+    #   - /dev/dri:/dev/dri
+    #   - /dev/dma_heap:/dev/dma_heap
     # group_add:
-    #   - "989" # EDIT: the output of getent group render | cut -d: -f3
+    #   - "989" # EDIT: the output of getent group render | cut -d: -f3 (for RKMPP, group video)
     read_only: true
     tmpfs:
       - /tmp

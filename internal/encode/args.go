@@ -12,12 +12,18 @@ type Backend string
 
 const (
 	BackendVAAPI    Backend = "vaapi"
+	BackendRKMPP    Backend = "rkmpp"
 	BackendSoftware Backend = "software"
 )
 
+// ValidBackend reports whether b names an encoder this build knows.
+func ValidBackend(b Backend) bool {
+	return b == BackendSoftware || b == BackendVAAPI || b == BackendRKMPP
+}
+
 // softwareTonemap converts HDR to BT.709 SDR on the CPU. It needs zimg, which
-// jellyfin-ffmpeg includes. It is the one path shared by Intel and AMD, so
-// the VAAPI backend uses it too and only the encode runs on the GPU.
+// jellyfin-ffmpeg includes. It is the one path every GPU shares, so the VAAPI
+// and RKMPP backends use it too, and only the encode runs on the hardware.
 const softwareTonemap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709," +
 	"tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
 
@@ -39,7 +45,11 @@ func EncodeArgs(src, out string, plan *Plan, prof Profile, backend Backend) []st
 }
 
 func inputArgs(plan *Plan, prof Profile, backend Backend) []string {
-	if backend != BackendVAAPI {
+	switch {
+	case backend == BackendRKMPP && !plan.Video.Tonemap:
+		// Frames stay in hardware memory from the decoder to the encoder.
+		return []string{"-hwaccel", "rkmpp", "-hwaccel_output_format", "drm_prime"}
+	case backend != BackendVAAPI:
 		return nil
 	}
 	if plan.Video.Tonemap {
@@ -63,6 +73,9 @@ func videoArgs(plan *Plan, prof Profile, backend Backend) []string {
 	if backend == BackendVAAPI {
 		return append(args, "-c:v", "h264_vaapi", "-rc_mode", "VBR", "-b:v", fmt.Sprintf("%dk", kbps))
 	}
+	if backend == BackendRKMPP {
+		return append(args, "-c:v", "h264_rkmpp", "-rc_mode", "VBR", "-b:v", fmt.Sprintf("%dk", kbps))
+	}
 	return append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p")
 }
 
@@ -71,6 +84,11 @@ func videoFilter(plan *Plan, backend Backend) string {
 	if backend == BackendVAAPI && !v.Tonemap {
 		return fmt.Sprintf("scale_vaapi=w=%d:h=%d:format=nv12", v.Width, v.Height)
 	}
+	// Always present, because the RGA also turns 10-bit sources into the
+	// encoder's 8-bit NV12 when no scaling is needed.
+	if backend == BackendRKMPP && !v.Tonemap {
+		return fmt.Sprintf("scale_rkrga=w=%d:h=%d:format=nv12", v.Width, v.Height)
+	}
 	var chain []string
 	if v.Tonemap {
 		chain = append(chain, softwareTonemap)
@@ -78,9 +96,13 @@ func videoFilter(plan *Plan, backend Backend) string {
 	if v.Scale {
 		chain = append(chain, fmt.Sprintf("scale=%d:%d:flags=lanczos", v.Width, v.Height))
 	}
-	if backend == BackendVAAPI {
+	switch backend {
+	case BackendVAAPI:
 		chain = append(chain, "format=nv12", "hwupload")
-	} else {
+	case BackendRKMPP:
+		// h264_rkmpp takes frames from system memory as they are.
+		chain = append(chain, "format=nv12")
+	default:
 		chain = append(chain, "format=yuv420p")
 	}
 	return strings.Join(chain, ",")

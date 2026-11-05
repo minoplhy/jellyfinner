@@ -56,6 +56,16 @@ Workers transfer over HTTPS by default. To compare with rclone on your real link
 
 Keep whichever is faster. Paths in rclone must be the ones the SSH user sees.
 
+### Rockchip hardware encoding (optional)
+
+On a Rockchip board such as an RK3588, the worker can encode with RKMPP. The board must run Rockchip's vendor kernel, because mainline kernels have no `/dev/mpp_service`.
+
+1. Uncomment `ENCODER: rkmpp` and the RKMPP `devices` in the worker's compose file. Set `group_add` to the host's `video` group ID.
+2. **Check:** `docker compose run --rm worker doctor` passes the Rockchip device, encoder and test encode checks.
+3. Re-encode the test episode. **Check:** its manifest on the Queue page says `backend: rkmpp`, not `software`.
+
+To prove each new image on the board, enrol it as a self-hosted GitHub Actions runner with the labels `linux`, `arm64` and `rkmpp`, then start the Images workflow by hand with `hardware: rkmpp`. That job never runs for pull requests, so code from strangers never reaches the board.
+
 ## 4. Jellyfin
 
 Add a new library pointing at the `library` folder of your store, and create a test user with video transcoding, audio transcoding and remux all disabled. Leave any existing library alone.

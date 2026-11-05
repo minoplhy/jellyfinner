@@ -182,22 +182,36 @@ func TestRunKeepsStyledSubtitles(t *testing.T) {
 	}
 }
 
+// The hardware is missing on test machines, so its attempt fails and the job
+// must still finish in software.
 func TestRunFallsBackToSoftware(t *testing.T) {
 	requireTools(t)
-	source := filepath.Join(t.TempDir(), "source.mkv")
-	makeSource(t, source)
-	cfg := testConfig(t, encode.BackendVAAPI)
-	cfg.Profile.Device = "/nonexistent/renderD128"
-	j := testJob(t, source)
+	for _, backend := range []encode.Backend{encode.BackendVAAPI, encode.BackendRKMPP} {
+		t.Run(string(backend), func(t *testing.T) {
+			if backend == encode.BackendRKMPP && hasDevice("/dev/mpp_service") {
+				t.Skip("real Rockchip hardware present")
+			}
+			source := filepath.Join(t.TempDir(), "source.mkv")
+			makeSource(t, source)
+			cfg := testConfig(t, backend)
+			cfg.Profile.Device = "/nonexistent/renderD128"
+			j := testJob(t, source)
 
-	log := &bytes.Buffer{}
-	manifest, err := Run(context.Background(), cfg, j, log, nil)
-	if err != nil {
-		t.Fatalf("%v\n%s", err, log)
+			log := &bytes.Buffer{}
+			manifest, err := Run(context.Background(), cfg, j, log, nil)
+			if err != nil {
+				t.Fatalf("%v\n%s", err, log)
+			}
+			if manifest.Backend != encode.BackendSoftware {
+				t.Errorf("backend = %q, want software fallback", manifest.Backend)
+			}
+		})
 	}
-	if manifest.Backend != encode.BackendSoftware {
-		t.Errorf("backend = %q, want software fallback", manifest.Backend)
-	}
+}
+
+func hasDevice(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func TestRunForceEncodeOverridesCopy(t *testing.T) {

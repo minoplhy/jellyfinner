@@ -143,7 +143,7 @@ Uncomment these blocks in the file.
 | `caddy` | Orchestrator, edge | Automatic HTTPS, if you have no reverse proxy. It needs ports 80 and 443 |
 | `router` | Orchestrator | Redirects cached titles to edge nodes. Needs `JELLYFIN_TOKEN` |
 | `jellyfin` | Orchestrator | Runs Jellyfin, if you do not have one already |
-| `ENCODER`, `devices`, `group_add` | Worker | Encodes with a VAAPI GPU |
+| `ENCODER`, `devices`, `group_add` | Worker | Encodes with a VAAPI GPU, or with RKMPP on a Rockchip board running its vendor kernel. The worker image is built for amd64 and arm64 |
 | `TRANSFER`, the `rclone` volume | Worker | Transfers with rclone over SFTP, for the speed test in [../first-run.md](../first-run.md) |
 
 ## Manual mode

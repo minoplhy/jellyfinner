@@ -19,7 +19,7 @@ If `/srv/originals` differs, update `RequiresMountsFor`, `ReadOnlyPaths` and `Re
 
 1. Install jellyfin-ffmpeg.
 2. Copy `worker.env.example` to `/etc/jellyfinner/worker.env`, mode 600.
-3. Install the binary and `systemd/jellyfinner-worker.service`. It transfers files over the control API, so it needs no SSH access. Set `--backend` to match the host: `software` by default, or `vaapi` with a GPU.
+3. Install the binary and `systemd/jellyfinner-worker.service`. It transfers files over the control API, so it needs no SSH access. Set `--backend` to match the host: `software` by default, `vaapi` with a GPU, or `rkmpp` on a Rockchip board running its vendor kernel.
 4. Apply the same sysctl file.
 
 ## Admin UI

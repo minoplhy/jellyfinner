@@ -207,8 +207,68 @@ func TestEncodeArgs(t *testing.T) {
 			t.Errorf("software args missing %q: %s", want, got)
 		}
 	}
-	if strings.Contains(got, "vaapi") {
-		t.Errorf("the software backend must not reference VAAPI: %s", got)
+	if strings.Contains(got, "vaapi") || strings.Contains(got, "rkmpp") || strings.Contains(got, "rkrga") {
+		t.Errorf("the software backend must not reference a GPU: %s", got)
+	}
+}
+
+func TestEncodeArgsRKMPP(t *testing.T) {
+	prof := DefaultProfile()
+	base := Plan{Audio: []AudioPlan{{Index: 1}}, Duration: 10}
+	hasAll := func(t *testing.T, got string, wants ...string) {
+		t.Helper()
+		for _, want := range wants {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q: %s", want, got)
+			}
+		}
+	}
+
+	copied := base
+	copied.Video = VideoPlan{Copy: true, Width: 1920, Height: 1080}
+	got := join(EncodeArgs("in", "out", &copied, prof, BackendRKMPP))
+	hasAll(t, got, "-c:v copy")
+	if strings.Contains(got, "rkmpp") || strings.Contains(got, "rkrga") {
+		t.Errorf("a stream copy must not touch the hardware: %s", got)
+	}
+
+	// A 10-bit 1080p source needs no scaling, but the RGA still converts it.
+	same := base
+	same.Video = VideoPlan{Width: 1920, Height: 1080}
+	got = join(EncodeArgs("in", "out", &same, prof, BackendRKMPP))
+	hasAll(t, got,
+		"-hwaccel rkmpp -hwaccel_output_format drm_prime -i in",
+		"-vf scale_rkrga=w=1920:h=1080:format=nv12",
+		"-c:v h264_rkmpp", "-rc_mode VBR", "-b:v 8000k", "-maxrate 8000k", "-bufsize 16000k",
+		"-profile:v high", "-force_key_frames expr:gte(t,n_forced*3)")
+
+	scaled := base
+	scaled.Video = VideoPlan{Width: 1280, Height: 720, Scale: true}
+	got = join(EncodeArgs("in", "out", &scaled, prof, BackendRKMPP))
+	hasAll(t, got, "scale_rkrga=w=1280:h=720:format=nv12", "h264_rkmpp")
+	if strings.Contains(got, "libx264") || strings.Contains(got, "vaapi") {
+		t.Errorf("rkmpp args mix in another encoder: %s", got)
+	}
+
+	hdr := base
+	hdr.Video = VideoPlan{Tonemap: true, Width: 1920, Height: 1080, Scale: true}
+	got = join(EncodeArgs("in", "out", &hdr, prof, BackendRKMPP))
+	hasAll(t, got, "tonemap=tonemap=hable", "scale=1920:1080:flags=lanczos,format=nv12 ", "h264_rkmpp")
+	if strings.Contains(got, "-hwaccel") || strings.Contains(got, "rkrga") || strings.Contains(got, "hwupload") {
+		t.Errorf("the CPU tonemap needs software decode and system memory frames: %s", got)
+	}
+}
+
+func TestValidBackend(t *testing.T) {
+	for _, b := range []Backend{BackendSoftware, BackendVAAPI, BackendRKMPP} {
+		if !ValidBackend(b) {
+			t.Errorf("%q should be valid", b)
+		}
+	}
+	for _, b := range []Backend{"", "nvenc", "RKMPP"} {
+		if ValidBackend(b) {
+			t.Errorf("%q should be invalid", b)
+		}
 	}
 }
 

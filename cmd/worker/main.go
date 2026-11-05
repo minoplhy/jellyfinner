@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	usage          = "usage: worker serve --url URL --scratch DIR [--transfer https|rclone] [--backend software|vaapi] [--device PATH]\n       worker doctor\n       worker health\n       worker prepare --owner UID:GID PATH[:MODE]...\n\nThe control token is read from NODE_TOKEN. Settings can also come from ORCHESTRATOR_URL, SCRATCH_DIR, TRANSFER, ENCODER, VAAPI_DEVICE, FFMPEG and FFPROBE.\n"
+	usage          = "usage: worker serve --url URL --scratch DIR [--transfer https|rclone] [--backend software|vaapi|rkmpp] [--device PATH]\n       worker doctor\n       worker health\n       worker prepare --owner UID:GID PATH[:MODE]...\n\nThe control token is read from NODE_TOKEN. Settings can also come from ORCHESTRATOR_URL, SCRATCH_DIR, TRANSFER, ENCODER, VAAPI_DEVICE, FFMPEG and FFPROBE.\n"
 	logTailBytes   = 256 << 10
 	finishAttempts = 5
 	healthMaxAge   = 3 * time.Minute
@@ -86,7 +86,7 @@ func flags(fs *flag.FlagSet) settings {
 	return settings{
 		url:     fs.String("url", os.Getenv("ORCHESTRATOR_URL"), "orchestrator control URL"),
 		scratch: fs.String("scratch", os.Getenv("SCRATCH_DIR"), "scratch directory on fast local disk"),
-		backend: fs.String("backend", envOr("ENCODER", string(encode.BackendSoftware)), "software or vaapi"),
+		backend: fs.String("backend", envOr("ENCODER", string(encode.BackendSoftware)), "software, vaapi or rkmpp"),
 		device:  fs.String("device", os.Getenv("VAAPI_DEVICE"), "VAAPI render node"),
 		ffmpeg:  fs.String("ffmpeg", envOr("FFMPEG", "ffmpeg"), "ffmpeg binary, ideally jellyfin-ffmpeg"),
 		ffprobe: fs.String("ffprobe", envOr("FFPROBE", "ffprobe"), "ffprobe binary"),
@@ -115,7 +115,7 @@ func serve(ctx context.Context, args []string) error {
 	if *scratch == "" {
 		return errors.New("--scratch is required")
 	}
-	if b := encode.Backend(*backend); b != encode.BackendVAAPI && b != encode.BackendSoftware {
+	if !encode.ValidBackend(encode.Backend(*backend)) {
 		return fmt.Errorf("unknown backend %q", *backend)
 	}
 	if *method != "https" && *method != "rclone" {
