@@ -44,6 +44,8 @@ const (
 	MetaBackfillActive   = "backfill_active"
 	MetaBackfillFinished = "backfill_finished"
 	MetaFirstScanDone    = "first_scan_done"
+	MetaCloudPaused      = "cloud_paused"
+	MetaCloudCluster     = "cloud_cluster"
 	// MetaBackfillUsedPrefix is followed by a UTC day, 2006-01-02.
 	MetaBackfillUsedPrefix = "backfill_used:"
 )
@@ -133,6 +135,7 @@ type Node struct {
 	URL        string
 	QuotaBytes int64
 	SigningKey string
+	Paused     bool // a paused worker claims no new job
 }
 
 // Edge reports whether this node caches encodes.
@@ -157,4 +160,52 @@ type NodeStatus struct {
 	Healthy   bool
 	DiskFree  int64
 	DiskTotal int64
+}
+
+// Cloud server states, in lifecycle order. A server is billed in every state
+// but CloudDeleted, which is only reached once the provider confirms it is gone.
+const (
+	CloudBooting  = "booting"  // created, not yet called the control API
+	CloudReady    = "ready"    // taking jobs
+	CloudDraining = "draining" // node paused, waiting for its job to end
+	CloudDeleting = "deleting" // delete sent, not yet confirmed
+	CloudDeleted  = "deleted"  // confirmed gone; kept as spending history
+)
+
+// CloudServer is one rented worker. Times are Unix seconds, zero when unset.
+// The price is the one quoted at creation, so spending history stays fixed
+// when the provider changes its prices later.
+type CloudServer struct {
+	Provider  string
+	ID        string // the provider's own ID
+	Name      string // also the node name
+	Type      string
+	Location  string
+	Resources string // provider-specific extras to delete with it, such as an IP
+	State     string
+	Created   int64
+	FirstSeen int64
+	IdleSince int64
+	DeleteAt  int64 // first delete request
+	Deleted   int64
+	Alerted   bool // the unconfirmed-delete alert was sent
+
+	HourlyPrice float64 // excluding VAT, server plus extras
+	Currency    string
+}
+
+// Live reports whether the server may still be billing.
+func (c *CloudServer) Live() bool { return c.State != CloudDeleted }
+
+// NodeWork is what one node finished over a period.
+type NodeWork struct {
+	Jobs        int
+	SourceBytes int64
+}
+
+// QueueWait describes the jobs that are ready to claim now.
+type QueueWait struct {
+	Count       int
+	SourceBytes int64
+	Oldest      int64 // created time of the oldest, Unix seconds
 }

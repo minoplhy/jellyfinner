@@ -90,6 +90,16 @@ func (r *Registry) SetToken(name, tokenHash string) error {
 	return nil
 }
 
+// SetPaused pauses or resumes a node. Claim reads it from the database, so it
+// holds at once; the cache only affects what the UI shows.
+func (r *Registry) SetPaused(name string, paused bool) error {
+	if err := r.store.SetNodePaused(name, paused); err != nil {
+		return err
+	}
+	r.forget()
+	return nil
+}
+
 func (r *Registry) forget() {
 	r.mu.Lock()
 	defer r.mu.Unlock()

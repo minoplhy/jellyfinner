@@ -72,6 +72,14 @@ docker compose exec orchestrator orchestrator node remove worker1
 
 `node remove` revokes the node and forgets what it cached. Files stay on an edge node's disk until you delete them.
 
+To stop a worker taking new jobs, pause it. It finishes the job it holds, then takes nothing until resumed. The pause is kept across restarts, and the Nodes page has the same buttons.
+
+```sh
+docker compose exec orchestrator orchestrator node pause worker1
+docker compose exec orchestrator orchestrator node resume worker1
+docker compose exec orchestrator orchestrator node pause --all
+```
+
 To limit a node to known addresses, add it with `--allow 203.0.113.7/32`.
 
 ## Folders and ownership
@@ -147,6 +155,42 @@ Uncomment these blocks in the file.
 | `jellyfin` | Orchestrator | Runs Jellyfin, if you do not have one already |
 | `ENCODER`, `devices`, `group_add` | Worker | Encodes with a VAAPI GPU, or with RKMPP on a Rockchip board running its vendor kernel. The worker image is built for amd64 and arm64 |
 | `TRANSFER`, the `rclone` volume | Worker | Transfers with rclone over SFTP, for the speed test in [../first-run.md](../first-run.md) |
+
+## Cloud workers
+
+Optional. The orchestrator can rent a worker server by the hour when the queue backs up, and delete it once idle. Your own workers keep running as before. Jellyfinner has adapters for Cherry Servers (cloud VPS, hourly) and Hetzner Cloud. Neither is preferred: add none, one or both, and list them in `CLOUD_PROVIDERS` in the order to try them. When one cannot start a server, because of stock, quota or an outage, the next one is tried.
+
+1. Create a project or account for Jellyfinner alone at each provider you add, and an API token for it. A Hetzner token can control its whole project.
+2. In the orchestrator's compose file, set `CLOUD_PROVIDERS` and that provider's `CLOUD_<PROVIDER>_*` values. `CONTROL_URL` must be an https address that rented servers can reach. [.env.example](../../.env.example) lists every setting.
+3. Run `docker compose exec orchestrator orchestrator doctor`. It checks each provider's token, project, types, locations and image.
+4. Try one by hand: `orchestrator cloud up --provider NAME`, then watch `orchestrator cloud status`.
+
+How it behaves:
+
+- **Starting.** A server starts when the oldest waiting title has waited `CLOUD_WAIT` (10 minutes), or `CLOUD_QUEUE_THRESHOLD` titles wait (3). `CLOUD_MAX` caps how many run (1). Backfill alone does not start one unless `CLOUD_BACKFILL=true`.
+- **Booting.** The server installs Docker if its image lacks it, then runs the worker with its own node token. A server that has not called in after `CLOUD_BOOT_TIMEOUT` is deleted.
+- **Stopping.** Both providers bill a server until it is deleted, even when it is powered off, so Jellyfinner always deletes. An idle server is kept until just before its paid hour ends, because deleting it sooner saves nothing. Its node is paused first, so it cannot take a job while being deleted.
+- **Making sure it is gone.** A server counts as deleted only once the provider confirms it is gone, along with any address it came with. Until then the delete is retried. After `CLOUD_DELETE_TIMEOUT` you get one notification, the Nodes page shows it in red, and `doctor` fails. Servers carry this orchestrator's tag, and a server without it is never deleted.
+- **Limits.** `CLOUD_MAX_HOURS_PER_DAY` (8) caps billed hours per UTC day. `CLOUD_MAX_SPEND_PER_DAY` caps estimated spending, when every provider prices in one currency. `CLOUD_MAX_LIFETIME` drains any server after 12 hours.
+- **Pausing.** `orchestrator cloud pause` stops new servers; running ones finish their jobs and are deleted as they go idle. Pausing a cloud server's node drains it.
+
+```sh
+docker compose exec orchestrator orchestrator cloud status
+docker compose exec orchestrator orchestrator cloud estimate
+docker compose exec orchestrator orchestrator cloud pause
+docker compose exec orchestrator orchestrator cloud down --wait
+```
+
+Run `cloud down --wait` before removing a provider from `CLOUD_PROVIDERS`. The orchestrator refuses to start while a provider it no longer lists still has a server.
+
+### Billing and estimates
+
+Estimates use each provider's own prices from its API, excluding VAT and traffic, and each server keeps the price quoted when it started. Cost per title and the cost to clear the queue appear only after servers have finished real work; speed is measured, never guessed. Prices are shown for information and never change the order you set.
+
+| Provider | Partial hour | Powered off | Source, checked 2026-11-05 |
+|---|---|---|---|
+| Cherry Servers, cloud VPS, hourly | Not documented. Jellyfinner assumes a whole hour, the costlier case | Billed until terminated | [Server actions](https://www.cherryservers.com/knowledge/docs/compute/configuration-management/server-actions), [Cloud VPS](https://www.cherryservers.com/knowledge/docs/compute/virtual-servers/cloud-vps) |
+| Hetzner Cloud | Rounded up to a whole hour, capped at the monthly price | Billed until deleted | [Hetzner Cloud billing FAQ](https://docs.hetzner.com/cloud/billing/faq/) |
 
 ## Manual mode
 

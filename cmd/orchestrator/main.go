@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"text/tabwriter"
@@ -42,6 +43,15 @@ const usage = `usage: orchestrator [--env FILE] COMMAND
   node list
   node remove NAME
   node rotate NAME             issues a new token, and the old one stops working
+  node pause NAME|--all        a worker finishes its job, then takes no more
+  node resume NAME|--all
+  cloud status                 rented workers, billed hours and estimated spending
+  cloud up [--provider NAME]   start one now, within the limits
+  cloud drain NAME             finish its job, then delete it
+  cloud down [--wait]          drain all; --wait blocks until deletes are confirmed
+  cloud pause|resume           stop or allow new servers
+  cloud reconcile              compare each provider's list with ours
+  cloud estimate               prices, measured speed and cost to clear the queue
   switch-mode auto|manual      run with serve stopped, after changing ENCODE_MODE
   backfill start|pause|status  start needs auto mode
   edge list
@@ -80,6 +90,8 @@ func main() {
 		err = runDoctor(*envFile)
 	case "prepare":
 		err = prepare.Command(args[1:])
+	case "cloud":
+		err = cloudCommand(*envFile, args[1:])
 	case "node":
 		err = nodeCommand(*envFile, args[1:])
 	case "switch-mode":
@@ -203,6 +215,19 @@ func serve(envFile string) error {
 			svc.EdgeCopyFailed(ctx, node, sha256, reason)
 		},
 	}, logger)
+	if err := orchestrator.CheckCloudProviders(svc); err != nil {
+		return err
+	}
+	if cfg.Cloud.Enabled() {
+		providers, err := orchestrator.BuildProviders(cfg.Cloud)
+		if err != nil {
+			return err
+		}
+		if svc.Cloud, err = orchestrator.NewCloud(svc, providers, control.LastSeen); err != nil {
+			return err
+		}
+		logger.Printf("cloud workers on, providers in this order: %s", strings.Join(providerNames(providers), ", "))
+	}
 	server := &http.Server{
 		Addr:              cfg.ControlAddr,
 		Handler:           control.Handler(),

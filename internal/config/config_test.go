@@ -239,3 +239,71 @@ func TestRemovedWebSettingsAreRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudIsOffByDefault(t *testing.T) {
+	c, err := parseMap(base())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Cloud.Enabled() || c.Cloud.WorkerImage != DefaultWorkerImage || c.Cloud.Max != 1 {
+		t.Errorf("cloud = %+v", c.Cloud)
+	}
+}
+
+// The operator's order is kept as written, whichever provider comes first.
+func TestCloudKeepsTheOperatorsOrder(t *testing.T) {
+	for _, order := range []string{"cherry,hetzner", "hetzner,cherry", "cherry", "hetzner"} {
+		m := base()
+		m["CONTROL_URL"] = "https://control.example.com"
+		m["CLOUD_PROVIDERS"] = order
+		m["CLOUD_CHERRY_TOKEN"], m["CLOUD_CHERRY_PROJECT"] = "ct", "42"
+		m["CLOUD_CHERRY_TYPES"], m["CLOUD_CHERRY_LOCATIONS"] = "vps_2, vps_1", "r1"
+		m["CLOUD_HETZNER_TOKEN"], m["CLOUD_HETZNER_TYPES"], m["CLOUD_HETZNER_LOCATIONS"] = "ht", "cx", "l1,l2"
+		c, err := parseMap(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, p := range c.Cloud.Providers {
+			got = append(got, p.Name)
+		}
+		if strings.Join(got, ",") != order {
+			t.Errorf("order %q became %v", order, got)
+		}
+		for _, p := range c.Cloud.Providers {
+			if p.Name == "cherry" && (p.Token != "ct" || p.Project != "42" || strings.Join(p.Types, ",") != "vps_2,vps_1") {
+				t.Errorf("cherry = %+v", p)
+			}
+			if p.Name == "hetzner" && (p.Token != "ht" || strings.Join(p.Locations, ",") != "l1,l2") {
+				t.Errorf("hetzner = %+v", p)
+			}
+		}
+	}
+}
+
+func TestCloudRejects(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		set  map[string]string
+		want string
+	}{
+		{"needs https control URL", map[string]string{"CLOUD_PROVIDERS": "hetzner"}, "CONTROL_URL"},
+		{"plain http control URL", map[string]string{"CLOUD_PROVIDERS": "hetzner", "CONTROL_URL": "http://c.example.com"}, "https"},
+		{"listed twice", map[string]string{"CLOUD_PROVIDERS": "hetzner,hetzner", "CONTROL_URL": "https://c.example.com"}, "twice"},
+		{"bad name", map[string]string{"CLOUD_PROVIDERS": "a b", "CONTROL_URL": "https://c.example.com"}, "provider name"},
+		{"zero max", map[string]string{"CLOUD_MAX": "0"}, "CLOUD_MAX"},
+		{"bad backfill", map[string]string{"CLOUD_BACKFILL": "maybe"}, "CLOUD_BACKFILL"},
+		{"negative spend", map[string]string{"CLOUD_MAX_SPEND_PER_DAY": "-1"}, "SPEND"},
+		{"bad idle", map[string]string{"CLOUD_IDLE": "soon"}, "CLOUD_IDLE"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := base()
+			for k, v := range tt.set {
+				m[k] = v
+			}
+			if _, err := parseMap(m); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}

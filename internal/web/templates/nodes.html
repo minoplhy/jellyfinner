@@ -7,7 +7,7 @@
 </div>
 {{template "addworker" $csrf}}
 {{template "workers" .Content}}
-<p class="muted small">An encoding node is online while it keeps calling the control API. The orchestrator keeps last-seen times in memory, so after a restart a node shows as not seen until its next call.</p>
+<p class="muted small">A paused node finishes the job it holds, then takes no more until resumed. An encoding node is online while it keeps calling the control API. The orchestrator keeps last-seen times in memory, so after a restart a node shows as not seen until its next call.</p>
 
 <div class="page-head">
   <h2>Edge nodes <span class="count">{{len .Content.Edges}}</span></h2>
@@ -15,6 +15,91 @@
 {{template "addedge" $csrf}}
 {{template "edges" .Content}}
 <p class="muted small">An edge node is online when its agent reported within the last minute and the orchestrator's probe of its URL passed. Only online edge nodes get viewers.</p>
+{{if .Content.Cloud}}{{template "cloud" .Content}}{{end}}
+{{end}}
+
+{{/* cloud is the rented workers section. It refreshes slowly, because it may
+     ask the providers for prices. */}}
+{{define "cloud"}}
+{{with .Cloud}}
+{{$csrf := .CSRF}}
+<div id="cloud" data-poll hx-get="{{base}}/fragments/nodes/cloud" hx-trigger="every 30s" hx-swap="outerHTML">
+<div class="page-head">
+  <h2>Cloud workers <span class="count">{{len .Servers}}</span></h2>
+  {{if .Paused}}<span class="badge b-paused">paused: no new servers</span>
+  <form method="post" action="{{base}}/cloud/resume" hx-post="{{base}}/cloud/resume" hx-target="#cloud" hx-swap="outerHTML">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><button class="small">Resume</button></form>
+  {{else}}<span class="badge b-online">on</span>
+  <form method="post" action="{{base}}/cloud/pause" hx-post="{{base}}/cloud/pause" hx-target="#cloud" hx-swap="outerHTML"
+    hx-confirm="Stop new cloud servers? Running ones finish their jobs and are deleted as they go idle.">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><button class="small quiet">Pause</button></form>
+  {{end}}
+</div>
+<p class="muted small">Providers are tried in your order from CLOUD_PROVIDERS: <b>{{range $i, $p := .Order}}{{if $i}}, then {{end}}{{$p}}{{end}}</b>. Prices never change it.
+{{range $name, $why := .Disabled}}<br><span class="error">{{$name}} is set aside until restart: {{$why}}</span>{{end}}</p>
+{{with .Err}}<p class="error small">{{.}}</p>{{end}}
+
+<div class="panel flush">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Server</th><th>Provider</th><th>Type</th><th>Location</th><th>State</th><th>Started</th><th>Paid until</th><th class="num">Cost so far</th><th></th></tr></thead>
+    <tbody>
+    {{range .Servers}}
+    <tr>
+      <td class="nowrap"><b>{{.Name}}</b></td>
+      <td>{{.Provider}}</td><td>{{.Type}}</td><td>{{.Location}}</td>
+      <td>{{if .Overdue}}<span class="badge b-failed">delete not confirmed: check the {{.Provider}} console</span>{{else}}{{template "badge" .State}}{{end}}</td>
+      <td class="muted nowrap">{{agoT (unixT .Created)}}</td>
+      <td class="nowrap">{{clock .PaidUntil}}</td>
+      <td class="num nowrap">{{money .Cost .Currency}}</td>
+      <td class="actions">{{if or (eq .State "booting") (eq .State "ready")}}
+        <form method="post" action="{{base}}/cloud/servers/{{.Name}}/drain" hx-post="{{base}}/cloud/servers/{{.Name}}/drain" hx-target="#cloud" hx-swap="outerHTML"
+          hx-confirm="Drain {{.Name}}? It finishes its job, then is deleted.">
+          <input type="hidden" name="csrf" value="{{$csrf}}"><button class="small quiet">Drain</button></form>{{end}}</td>
+    </tr>
+    {{else}}<tr><td class="empty" colspan="9">None running. One starts when the queue needs it.</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+<p class="muted small">An idle server is kept until just before its paid time ends, because deleting it sooner saves nothing.</p>
+
+<div class="meta">
+  <span>Billed hours today (UTC): <b>{{hours .Usage.HoursToday}}</b> of {{hours .HoursCap}} allowed</span>
+  {{range .Usage.Spend}}<span>{{.Provider}}: about <b>{{money .Today .Currency}}</b> today, {{money .Month .Currency}} this month</span>{{end}}
+</div>
+
+<h3>Estimated cost by option</h3>
+<p class="muted small">Queue: {{.Estimate.QueueTitles}} titles, {{printf "%.1f" .Estimate.QueueGB}} GB of source.
+{{if not .Measured}}Only prices so far: speed is measured from real jobs, never guessed, so per-title and queue costs appear once servers have finished work.{{end}}</p>
+<div class="panel flush">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Provider</th><th>Type</th><th>Location</th><th class="num">Per hour</th><th>Measured</th><th class="num">GB per hour</th><th class="num">Per title</th><th class="num">To clear the queue</th></tr></thead>
+    <tbody>
+    {{range .Estimate.Rows}}
+    <tr>
+      <td>{{.Provider}}</td><td>{{.Type}}</td><td>{{.Location}}</td>
+      <td class="num nowrap">{{if .Currency}}{{money .Hourly .Currency}}{{if .Taxed}} incl. tax{{end}}{{else}}<span class="muted">price unavailable</span>{{end}}</td>
+      {{if .Jobs}}<td>{{.Jobs}} jobs</td><td class="num">{{printf "%.1f" .GBPerHour}}</td><td class="num nowrap">{{money .CostPerTitle .Currency}}</td>
+      <td class="num nowrap">{{if .QueueHours}}{{money .QueueCost .Currency}}, about {{hours .QueueHours}} h{{else}}—{{end}}</td>
+      {{else}}<td class="muted">no jobs yet</td><td class="num muted">—</td><td class="num muted">—</td><td class="num muted">—</td>{{end}}
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+<p class="muted small"><b>Estimates</b>, excluding VAT and traffic{{if not .PricedAt.IsZero}}, with prices fetched {{date .PricedAt}} from each provider's API{{end}}. Spending uses the price quoted when each server started.</p>
+
+<h3>How each provider bills</h3>
+<ul class="small">
+{{range .Billing}}<li><b>{{.Name}}</b>: {{.Billing.Note}}
+  {{range .Billing.Sources}} <a href="{{.URL}}" rel="noreferrer" target="_blank">{{.Title}}</a>{{end}}
+  <span class="muted">(checked {{.Billing.Checked}})</span></li>{{end}}
+</ul>
+</div>
+{{end}}
 {{end}}
 
 {{define "addworker"}}
@@ -60,6 +145,19 @@
   <input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small quiet danger">Remove node</button></form>
 {{end}}
 
+{{/* nodepause pauses or resumes one worker. Its Edge field carries whether it
+     is paused, since edge nodes never get this button. */}}
+{{define "nodepause"}}
+{{if .Edge}}
+<form method="post" action="{{base}}/nodes/{{.Name}}/resume" hx-post="{{base}}/nodes/{{.Name}}/resume" hx-target="#workers" hx-swap="outerHTML">
+  <input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small">Resume</button></form>
+{{else}}
+<form method="post" action="{{base}}/nodes/{{.Name}}/pause" hx-post="{{base}}/nodes/{{.Name}}/pause" hx-target="#workers" hx-swap="outerHTML"
+  hx-confirm="Pause {{.Name}}? A job it holds runs to the end, then it takes no more until you resume it.">
+  <input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small quiet">Pause</button></form>
+{{end}}
+{{end}}
+
 {{define "workers"}}
 {{$csrf := .CSRF}}
 <div id="workers" class="panel flush" data-poll hx-get="{{base}}/fragments/nodes/workers" hx-trigger="every 3s" hx-swap="outerHTML">
@@ -74,7 +172,7 @@
       <td class="muted nowrap">{{if .Seen.IsZero}}—{{else}}{{agoT .Seen}}{{end}}</td>
       <td>{{range .Active}}<div class="path small"><a href="{{base}}/jobs/{{.ID}}">{{template "path" .Path}}</a></div>{{if eq .State "running"}}{{template "progress" .}}{{else}}{{template "badge" .State}}{{end}}{{else}}<span class="muted">idle</span>{{end}}</td>
       <td class="num">{{if .Failed}}<a class="error" href="{{base}}/queue?state=failed&node={{.Name}}">{{.Failed}}</a>{{else}}<span class="muted">0</span>{{end}}</td>
-      <td class="actions">{{template "nodeadmin" (nodeAdmin .Name false $csrf)}}</td>
+      <td class="actions">{{template "nodepause" (nodeAdmin .Name .Paused $csrf)}}{{template "nodeadmin" (nodeAdmin .Name false $csrf)}}</td>
     </tr>
     {{else}}<tr><td class="empty" colspan="6">No encoding nodes yet. Add one above, then paste its settings into the worker compose file.</td></tr>{{end}}
     </tbody>

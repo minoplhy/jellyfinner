@@ -113,7 +113,30 @@ CREATE INDEX IF NOT EXISTS jobs_path ON jobs (path, state);
 
 // migrations change a database that already has the schema above, in order. Only
 // ever append: each one's position is the user_version it brings a database to.
-var migrations []string
+var migrations = []string{
+	// 1: a paused worker finishes its job and claims nothing more.
+	`ALTER TABLE nodes ADD COLUMN paused INTEGER NOT NULL DEFAULT 0`,
+	// 2: rented workers, kept after deletion as spending history.
+	`CREATE TABLE cloud_servers (
+		provider     TEXT NOT NULL,
+		id           TEXT NOT NULL,
+		name         TEXT NOT NULL,
+		type         TEXT NOT NULL,
+		location     TEXT NOT NULL,
+		resources    TEXT NOT NULL DEFAULT '',
+		state        TEXT NOT NULL,
+		created      INTEGER NOT NULL,
+		first_seen   INTEGER NOT NULL DEFAULT 0,
+		idle_since   INTEGER NOT NULL DEFAULT 0,
+		delete_at    INTEGER NOT NULL DEFAULT 0,
+		deleted      INTEGER NOT NULL DEFAULT 0,
+		alerted      INTEGER NOT NULL DEFAULT 0,
+		hourly_price REAL NOT NULL DEFAULT 0,
+		currency     TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (provider, id)
+	);
+	CREATE INDEX cloud_servers_state ON cloud_servers (state, deleted);`,
+}
 
 // migrate applies whichever steps this database has not had. The transaction
 // takes the write lock first, so two processes cannot both apply a step.

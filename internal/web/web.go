@@ -94,6 +94,17 @@ func New(svc *orchestrator.Service, auth jellyfin.API, lastSeen func() map[strin
 		"nodeAdmin": func(name string, edge bool, csrf string) nodeAdmin {
 			return nodeAdmin{Name: name, Edge: edge, CSRF: csrf}
 		},
+		// money is an estimated amount in a provider's own currency.
+		"money": func(v float64, currency string) string {
+			if currency == "" {
+				return "unknown"
+			}
+			return fmt.Sprintf("%.4f %s", v, currency)
+		},
+		"unixT": func(unix int64) time.Time { return time.Unix(unix, 0) },
+		"clock": func(t time.Time) string { return t.Local().Format("15:04") },
+		"date":  func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") },
+		"hours": func(v float64) string { return fmt.Sprintf("%.1f", v) },
 		// pctOf is a share of a total, for meter thresholds.
 		"pctOf": func(total int64, percent int64) int64 { return total / 100 * percent },
 	}
@@ -181,6 +192,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /nodes/{node}/remove", s.protected(s.nodeRemove))
 	mux.HandleFunc("POST /nodes/{node}/rotate", s.protected(s.nodeRotate))
 	mux.HandleFunc("POST /nodes/{node}/delete", s.protected(s.nodeDelete))
+	mux.HandleFunc("POST /nodes/{node}/{action}", s.protected(s.nodePause))
+	mux.HandleFunc("POST /cloud/{action}", s.protected(s.cloudAction))
+	mux.HandleFunc("POST /cloud/servers/{name}/drain", s.protected(s.cloudDrain))
 	return headers(config.StripPrefix(s.base, mux))
 }
 

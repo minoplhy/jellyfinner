@@ -46,6 +46,8 @@ type Service struct {
 	Stub    stub.Master
 	Log     *log.Logger
 	Profile string
+	// Cloud rents workers on demand; nil unless CLOUD_PROVIDERS lists any.
+	Cloud *Cloud
 
 	publishNow chan struct{}
 	scanNow    chan struct{}
@@ -118,6 +120,15 @@ func (s *Service) Run(ctx context.Context) {
 
 	s.TriggerScan()
 	s.TriggerPublish()
+	var cloudDone sync.WaitGroup
+	defer cloudDone.Wait()
+	if s.Cloud != nil {
+		cloudDone.Add(1)
+		go func() {
+			defer cloudDone.Done()
+			s.Cloud.Run(ctx)
+		}()
+	}
 	for {
 		select {
 		case <-ctx.Done():

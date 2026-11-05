@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
@@ -69,6 +70,58 @@ func (s *Service) AddNode(spec NodeSpec) (NodeSecrets, error) {
 		return out, err
 	}
 	return NodeSecrets{Node: node, Token: token, SigningKey: node.SigningKey}, nil
+}
+
+// PauseNode stops a worker taking new jobs. A job it already holds runs to the
+// end, so nothing is lost.
+func (s *Service) PauseNode(name string) error { return s.setPaused(name, true) }
+
+// ResumeNode lets a paused worker take jobs again.
+func (s *Service) ResumeNode(name string) error { return s.setPaused(name, false) }
+
+func (s *Service) setPaused(name string, paused bool) error {
+	n, err := s.findNode(name)
+	if err != nil {
+		return err
+	}
+	if n.Edge() {
+		return fmt.Errorf("%s is an edge node, which takes no jobs, so it cannot be paused", name)
+	}
+	return s.Nodes.SetPaused(name, paused)
+}
+
+// SetAllWorkersPaused pauses or resumes every worker, and returns their names.
+func (s *Service) SetAllWorkersPaused(paused bool) ([]string, error) {
+	all, err := s.Store.LoadNodes()
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, n := range all {
+		if n.Edge() {
+			continue
+		}
+		if err := s.Nodes.SetPaused(n.Name, paused); err != nil {
+			return names, err
+		}
+		names = append(names, n.Name)
+	}
+	return names, nil
+}
+
+// findNode reads straight from the database, so a node added a moment ago by
+// another process is found.
+func (s *Service) findNode(name string) (*model.Node, error) {
+	all, err := s.Store.LoadNodes()
+	if err != nil {
+		return nil, err
+	}
+	for i := range all {
+		if all[i].Name == name {
+			return &all[i], nil
+		}
+	}
+	return nil, fmt.Errorf("node %s: %w", name, model.ErrNotFound)
 }
 
 // RotateNodeToken issues a new token. The old one stops working within

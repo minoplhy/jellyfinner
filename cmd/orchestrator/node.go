@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"jellyfinner/internal/database"
@@ -17,7 +18,7 @@ import (
 // within seconds, so none of this needs a restart.
 func nodeCommand(envFile string, args []string) error {
 	if len(args) == 0 {
-		return errors.New("node needs add, list, remove or rotate")
+		return errors.New("node needs add, list, remove, rotate, pause or resume")
 	}
 	cfg, store, err := open(envFile)
 	if err != nil {
@@ -32,6 +33,9 @@ func nodeCommand(envFile string, args []string) error {
 		return fmt.Errorf("node %s needs a NAME", command)
 	}
 	svc := orchestrator.New(cfg, store, notify.New("", ""), nil, log.Default())
+	if command == "pause" || command == "resume" {
+		return pauseNodes(svc, command == "pause", rest[0])
+	}
 	name := rest[0]
 	switch command {
 	case "add":
@@ -77,15 +81,52 @@ func addNode(svc *orchestrator.Service, name string, args []string) error {
 	return nil
 }
 
+// pauseNodes takes one name, or --all for every worker. A paused worker
+// finishes the job it holds and takes no more until resumed.
+func pauseNodes(svc *orchestrator.Service, paused bool, name string) error {
+	verb := map[bool]string{true: "Paused", false: "Resumed"}[paused]
+	if name == "--all" {
+		names, err := svc.SetAllWorkersPaused(paused)
+		if err != nil {
+			return err
+		}
+		if len(names) == 0 {
+			fmt.Println("There are no workers.")
+			return nil
+		}
+		fmt.Printf("%s: %s\n", verb, strings.Join(names, ", "))
+		return nil
+	}
+	var err error
+	if paused {
+		err = svc.PauseNode(name)
+	} else {
+		err = svc.ResumeNode(name)
+	}
+	if err != nil {
+		return err
+	}
+	if paused {
+		fmt.Printf("%s %s. A job it holds runs to the end, then it takes no more.\n", verb, name)
+	} else {
+		fmt.Printf("%s %s.\n", verb, name)
+	}
+	return nil
+}
+
 func listNodes(store database.Store) error {
 	nodes, err := store.LoadNodes()
 	if err != nil {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NODE\tKIND\tQUOTA GB\tURL\tALLOW")
+	fmt.Fprintln(w, "NODE\tKIND\tSTATE\tQUOTA GB\tURL\tALLOW")
 	for _, n := range nodes {
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%v\n", n.Name, n.Kind, n.QuotaBytes/1e9, n.URL, n.Allow)
+		state := "active"
+		if n.Paused {
+			state = "paused"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%v\n", n.Name, n.Kind, state, n.QuotaBytes/1e9, n.URL, n.Allow)
 	}
 	return w.Flush()
 }

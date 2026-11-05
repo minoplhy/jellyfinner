@@ -53,6 +53,10 @@ func TestImportRules(t *testing.T) {
 					t.Errorf("%s imports %s: only a backend under internal/database/ may", rel, imp)
 				}
 			}
+			// Cloud adapters only speak to provider APIs; state stays with the orchestrator.
+			if strings.HasPrefix(rel, "internal/cloud/") && strings.HasPrefix(imp, "jellyfinner/internal/database") {
+				t.Errorf("%s imports %s: cloud adapters must not touch the database", rel, imp)
+			}
 			isBackend := strings.HasPrefix(imp, backendPrefix) && imp != backendPrefix+"dbtest"
 			if isBackend && !inDatabase && !inCmd && !isTest {
 				t.Errorf("%s imports %s: only cmd/* chooses a backend; use database.Store", rel, imp)

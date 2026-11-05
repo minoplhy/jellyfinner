@@ -71,9 +71,23 @@ func (s *Store) SetNodeToken(name, tokenHash string) error {
 	return nil
 }
 
+// SetNodePaused pauses or resumes a node.
+func (s *Store) SetNodePaused(name string, paused bool) error {
+	res, err := s.db.Exec(`UPDATE nodes SET paused = ? WHERE name = ?`, paused, name)
+	if err != nil {
+		return err
+	}
+	if changed, err := res.RowsAffected(); err != nil {
+		return err
+	} else if changed == 0 {
+		return fmt.Errorf("node %s: %w", name, model.ErrNotFound)
+	}
+	return nil
+}
+
 // LoadNodes reads every node from the database, by name.
 func (s *Store) LoadNodes() ([]model.Node, error) {
-	rows, err := s.db.Query(`SELECT name, kind, token_hash, allow, url, quota_bytes, signing_key FROM nodes ORDER BY name`)
+	rows, err := s.db.Query(`SELECT name, kind, token_hash, allow, url, quota_bytes, signing_key, paused FROM nodes ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +96,7 @@ func (s *Store) LoadNodes() ([]model.Node, error) {
 	for rows.Next() {
 		var n model.Node
 		var allow string
-		if err := rows.Scan(&n.Name, &n.Kind, &n.TokenHash, &allow, &n.URL, &n.QuotaBytes, &n.SigningKey); err != nil {
+		if err := rows.Scan(&n.Name, &n.Kind, &n.TokenHash, &allow, &n.URL, &n.QuotaBytes, &n.SigningKey, &n.Paused); err != nil {
 			return nil, err
 		}
 		if n.Allow, err = parseAllow(allow); err != nil {

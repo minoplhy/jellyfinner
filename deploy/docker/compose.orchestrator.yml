@@ -44,6 +44,20 @@ x-app: &app
     # ADMIN_URL: https://admin.example.com
     # Edge delivery: alice=edge1;bob=edge1
     EDGE_VIEWERS: ""
+    # Cloud workers, optional: rent servers by the hour when the queue backs up.
+    # List only the providers you add, in the order to try them. There is no
+    # default order. See "Cloud workers" in deploy/docker/README.md.
+    # CLOUD_PROVIDERS: ""
+    # CLOUD_MAX: "1"
+    # CLOUD_MAX_HOURS_PER_DAY: "8"
+    # CLOUD_CHERRY_TOKEN: ""
+    # CLOUD_CHERRY_PROJECT: ""
+    # CLOUD_CHERRY_TYPES: ""
+    # CLOUD_CHERRY_LOCATIONS: ""
+    # CLOUD_CHERRY_IMAGE: ""
+    # CLOUD_HETZNER_TOKEN: ""
+    # CLOUD_HETZNER_TYPES: ""
+    # CLOUD_HETZNER_LOCATIONS: ""
   volumes:
     # Your media, read-only. It is never changed.
     - /srv/originals:/originals:ro # EDIT the left side

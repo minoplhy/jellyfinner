@@ -103,6 +103,155 @@ type Config struct {
 	MetricsAddr  string
 	DiscordURL   string
 	NtfyURL      string
+
+	// Cloud rents workers by the hour. It is off unless providers are listed.
+	Cloud Cloud
+}
+
+// Cloud holds the on-demand worker settings. Providers are in the order the
+// operator listed them, which is the only order failover ever uses.
+type Cloud struct {
+	Providers      []CloudProvider
+	Max            int
+	Wait           time.Duration
+	QueueThreshold int
+	Idle           time.Duration
+	BootTimeout    time.Duration
+	MaxLifetime    time.Duration
+	DeleteTimeout  time.Duration
+	MaxHoursPerDay float64
+	// MaxSpendPerDay is in the providers' shared currency, and 0 means no cap.
+	MaxSpendPerDay float64
+	Backfill       bool
+	WorkerImage    string
+}
+
+// Enabled reports whether any provider is listed.
+func (c Cloud) Enabled() bool { return len(c.Providers) > 0 }
+
+// Provider returns one listed provider's settings, or nil.
+func (c Cloud) Provider(name string) *CloudProvider {
+	for i := range c.Providers {
+		if c.Providers[i].Name == name {
+			return &c.Providers[i]
+		}
+	}
+	return nil
+}
+
+// ProviderTypes lists a provider's types in the operator's order.
+func (c Cloud) ProviderTypes(name string) []string {
+	if p := c.Provider(name); p != nil {
+		return p.Types
+	}
+	return nil
+}
+
+// ProviderLocations lists a provider's locations in the operator's order.
+func (c Cloud) ProviderLocations(name string) []string {
+	if p := c.Provider(name); p != nil {
+		return p.Locations
+	}
+	return nil
+}
+
+// CloudProvider is one provider's CLOUD_<NAME>_* values. Which names exist,
+// and which values each needs, is the adapter's business.
+type CloudProvider struct {
+	Name      string
+	Token     string
+	Project   string
+	Types     []string
+	Locations []string
+	Image     string
+	SSHKey    string
+}
+
+// DefaultWorkerImage matches the worker compose file.
+const DefaultWorkerImage = "ghcr.io/minoplhy/jellyfinner/worker:latest"
+
+var providerName = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
+
+func parseCloud(get func(string) string) (Cloud, error) {
+	c := Cloud{WorkerImage: or(get("CLOUD_WORKER_IMAGE"), DefaultWorkerImage)}
+	seen := map[string]bool{}
+	for _, name := range list(get("CLOUD_PROVIDERS")) {
+		name = strings.ToLower(name)
+		if !providerName.MatchString(name) {
+			return c, fmt.Errorf("CLOUD_PROVIDERS: %q is not a provider name", name)
+		}
+		if seen[name] {
+			return c, fmt.Errorf("CLOUD_PROVIDERS lists %s twice", name)
+		}
+		seen[name] = true
+		prefix := "CLOUD_" + strings.ToUpper(name) + "_"
+		c.Providers = append(c.Providers, CloudProvider{
+			Name:      name,
+			Token:     get(prefix + "TOKEN"),
+			Project:   get(prefix + "PROJECT"),
+			Types:     list(get(prefix + "TYPES")),
+			Locations: list(get(prefix + "LOCATIONS")),
+			Image:     get(prefix + "IMAGE"),
+			SSHKey:    get(prefix + "SSH_KEY"),
+		})
+	}
+	var err error
+	for _, d := range []struct {
+		key      string
+		fallback time.Duration
+		into     *time.Duration
+	}{
+		{"CLOUD_WAIT", 10 * time.Minute, &c.Wait},
+		{"CLOUD_IDLE", 5 * time.Minute, &c.Idle},
+		{"CLOUD_BOOT_TIMEOUT", 10 * time.Minute, &c.BootTimeout},
+		{"CLOUD_MAX_LIFETIME", 12 * time.Hour, &c.MaxLifetime},
+		{"CLOUD_DELETE_TIMEOUT", 15 * time.Minute, &c.DeleteTimeout},
+	} {
+		if *d.into, err = duration(get(d.key), d.fallback); err != nil {
+			return c, fmt.Errorf("%s: %w", d.key, err)
+		}
+		if *d.into <= 0 {
+			return c, fmt.Errorf("%s must be positive", d.key)
+		}
+	}
+	if c.Max, err = integer(get("CLOUD_MAX"), 1); err != nil || c.Max < 1 {
+		return c, errors.New("CLOUD_MAX must be a whole number of at least 1")
+	}
+	if c.QueueThreshold, err = integer(get("CLOUD_QUEUE_THRESHOLD"), 3); err != nil || c.QueueThreshold < 1 {
+		return c, errors.New("CLOUD_QUEUE_THRESHOLD must be a whole number of at least 1")
+	}
+	if c.MaxHoursPerDay, err = number(get("CLOUD_MAX_HOURS_PER_DAY"), 8); err != nil || c.MaxHoursPerDay <= 0 {
+		return c, errors.New("CLOUD_MAX_HOURS_PER_DAY must be a positive number")
+	}
+	if c.MaxSpendPerDay, err = number(get("CLOUD_MAX_SPEND_PER_DAY"), 0); err != nil || c.MaxSpendPerDay < 0 {
+		return c, errors.New("CLOUD_MAX_SPEND_PER_DAY must be a number, 0 for no cap")
+	}
+	switch v := strings.ToLower(get("CLOUD_BACKFILL")); v {
+	case "", "false", "0", "no":
+	case "true", "1", "yes":
+		c.Backfill = true
+	default:
+		return c, fmt.Errorf("CLOUD_BACKFILL must be true or false, got %q", v)
+	}
+	return c, nil
+}
+
+// list splits a comma-separated setting, dropping blanks.
+func list(v string) []string {
+	var out []string
+	for _, item := range strings.Split(v, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func number(v string, fallback float64) (float64, error) {
+	if v == "" {
+		return fallback, nil
+	}
+	return strconv.ParseFloat(v, 64)
 }
 
 // Load reads envFile, which may be absent, then validates the result.
@@ -227,6 +376,9 @@ func parse(get func(string) string) (*Config, error) {
 		return nil, errors.New("BACKFILL_DAILY_GB must be positive")
 	}
 	c.BackfillDailyBytes = int64(dailyGB) * 1e9
+	if c.Cloud, err = parseCloud(get); err != nil {
+		return nil, err
+	}
 	return c, c.validate()
 }
 
@@ -281,6 +433,10 @@ func (c *Config) validate() error {
 		if _, err := URLBasePath(u.value); err != nil {
 			return fmt.Errorf("%s: %w", u.key, err)
 		}
+	}
+	// Rented servers reach the control API over the internet, with their token.
+	if c.Cloud.Enabled() && !strings.HasPrefix(c.ControlURL, "https://") {
+		return errors.New("CLOUD_PROVIDERS needs CONTROL_URL set to an https address that rented servers can reach")
 	}
 	return nil
 }

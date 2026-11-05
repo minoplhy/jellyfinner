@@ -19,15 +19,20 @@ type nodeState struct {
 }
 
 // workerState judges an encoding node by its last control API call. Those
-// times live in memory, so a restart forgets them.
-func (s *Server) workerState(seen time.Time) nodeState {
+// times live in memory, so a restart forgets them. A paused node says so
+// whatever its connection, because it is why it takes no work.
+func (s *Server) workerState(seen time.Time, paused bool) nodeState {
+	st := nodeState{"offline", "offline"}
 	switch {
 	case seen.IsZero():
-		return nodeState{"unseen", "not seen since restart"}
+		st = nodeState{"unseen", "not seen since restart"}
 	case s.now().Sub(seen) < 2*s.svc.Cfg.LeaseFor:
-		return nodeState{"online", "online"}
+		st = nodeState{"online", "online"}
 	}
-	return nodeState{"offline", "offline"}
+	if paused {
+		st = nodeState{"paused", "paused, " + st.Label}
+	}
+	return st
 }
 
 // edgeState uses the router's own rule, so "online" means viewers are sent
@@ -88,7 +93,7 @@ func (s *Server) dashboardData(csrf string) (dashboardData, error) {
 				row.Seen = time.Unix(st.LastSeen, 0)
 			}
 		} else {
-			row.State = s.workerState(row.Seen)
+			row.State = s.workerState(row.Seen, node.Paused)
 		}
 		data.Nodes = append(data.Nodes, row)
 	}

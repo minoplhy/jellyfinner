@@ -97,8 +97,8 @@ h1.path { font-size: 18px; line-height: 1.4; }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .b-done, .b-ready, .b-active, .b-online, .b-auto { background: var(--good-bg); color: var(--good); }
 .b-failed, .b-offline, .b-missing { background: var(--bad-bg); color: var(--bad); }
-.b-running, .b-publishing, .b-encoding, .b-pulling, .b-manual { background: var(--info-bg); color: var(--info); }
-.b-queued, .b-unhealthy, .b-deleting, .b-backlog { background: var(--warn-bg); color: var(--warn); }
+.b-running, .b-publishing, .b-encoding, .b-pulling, .b-manual, .b-booting { background: var(--info-bg); color: var(--info); }
+.b-queued, .b-unhealthy, .b-deleting, .b-backlog, .b-paused, .b-draining { background: var(--warn-bg); color: var(--warn); }
 .b-running::before, .b-encoding::before, .b-pulling::before, .b-publishing::before { animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.25; } }
 @media (prefers-reduced-motion: reduce) { .badge::before { animation: none !important; } }

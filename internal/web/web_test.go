@@ -187,7 +187,7 @@ func TestEveryPageNeedsLogin(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"/library/add", "/library/reencode", "/library/reencode/confirm", "/jobs/x/cancel", "/logout",
-		"/scan", "/backfill/start", "/nodes/add", "/nodes/worker1/rotate", "/nodes/worker1/delete"} {
+		"/scan", "/backfill/start", "/nodes/add", "/nodes/worker1/rotate", "/nodes/worker1/delete", "/nodes/worker1/pause", "/cloud/pause", "/cloud/servers/x/drain"} {
 		got, _ := f.post(c, path, url.Values{})
 		if got != http.StatusUnauthorized {
 			t.Errorf("POST %s = %d", path, got)
@@ -608,5 +608,31 @@ func TestBasePath(t *testing.T) {
 	resp = do(http.MethodPost, "/admin/library/add", url.Values{"csrf": {m[1]}, "path": {"a.mkv"}})
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/admin/library" {
 		t.Errorf("form post = %d to %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+func TestPauseAndResumeWorker(t *testing.T) {
+	f := newFixture(t)
+	c := f.admin()
+	token := f.csrf(c)
+	if code, _ := f.post(c, "/nodes/worker1/pause", url.Values{"csrf": {token}}); code != http.StatusSeeOther {
+		t.Fatalf("pause = %d", code)
+	}
+	nodes, err := f.store.LoadNodes()
+	if err != nil || !nodes[0].Paused {
+		t.Fatalf("worker1 not paused: %+v, %v", nodes, err)
+	}
+	_, body := f.get(c, "/nodes")
+	if !strings.Contains(body, "paused, online") || !strings.Contains(body, "/nodes/worker1/resume") {
+		t.Error("the Nodes page must show the pause and offer resume")
+	}
+	if code, _ := f.post(c, "/nodes/worker1/resume", url.Values{"csrf": {token}}); code != http.StatusSeeOther {
+		t.Fatalf("resume = %d", code)
+	}
+	if nodes, _ := f.store.LoadNodes(); nodes[0].Paused {
+		t.Error("worker1 still paused")
+	}
+	if code, _ := f.post(c, "/nodes/worker1/explode", url.Values{"csrf": {token}}); code != http.StatusNotFound {
+		t.Errorf("unknown action = %d", code)
 	}
 }

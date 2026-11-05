@@ -73,6 +73,13 @@ type JobStore interface {
 	JobsByID() (map[string]string, error)
 	// LatestJobs returns the newest job for each source path.
 	LatestJobs() (map[string]*model.Job, error)
+	// RunningByNode counts each node's running jobs.
+	RunningByNode() (map[string]int, error)
+	// WorkByNode sums, per node, the jobs it finished since a time.
+	WorkByNode(since time.Time) (map[string]model.NodeWork, error)
+	// Waiting describes the queued jobs a worker could claim now. Backfill
+	// jobs count only when includeBackfill is set and backfill is running.
+	Waiting(includeBackfill bool) (model.QueueWait, error)
 	// StateCounts returns the number of jobs in each state.
 	StateCounts() (map[string]int, error)
 	// HasActive reports whether a source has a job queued, running or
@@ -160,6 +167,9 @@ type NodeStore interface {
 	RemoveNode(name string) error
 	// SetNodeToken replaces a node's token hash.
 	SetNodeToken(name, tokenHash string) error
+	// SetNodePaused pauses or resumes a node. Claim gives a paused node no
+	// job; one it already holds runs to the end.
+	SetNodePaused(name string, paused bool) error
 	// LoadNodes reads every node, by name.
 	LoadNodes() ([]model.Node, error)
 }
@@ -212,8 +222,20 @@ type ModeStore interface {
 }
 
 // Store is every persistence operation.
+// CloudStore keeps rented servers, including deleted ones as spending history.
+type CloudStore interface {
+	// AddCloudServer stores a new server.
+	AddCloudServer(c *model.CloudServer) error
+	// UpdateCloudServer saves every field of the server with this provider and ID.
+	UpdateCloudServer(c *model.CloudServer) error
+	// CloudServers returns live servers, and deleted ones whose deletion was
+	// at or after since, oldest first.
+	CloudServers(since time.Time) ([]*model.CloudServer, error)
+}
+
 type Store interface {
 	MetaStore
+	CloudStore
 	JobStore
 	SourceStore
 	RequestStore

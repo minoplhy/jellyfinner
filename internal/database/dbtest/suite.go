@@ -548,3 +548,131 @@ func (x suite) TestSetEncodedNeedsATrackedSource(t *testing.T) {
 		t.Error("recording an encode for no source must fail")
 	}
 }
+
+func (x suite) TestPausedNodeClaimsNothing(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	for _, name := range []string{"worker1", "worker2"} {
+		if err := s.AddNode(&model.Node{Name: name, Kind: model.NodeWorker, TokenHash: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addJob(t, s, "a", model.PriorityNew)
+	addJob(t, s, "b", model.PriorityNew)
+	running := claim(t, s)
+	if running == nil {
+		t.Fatal("want a job before the pause")
+	}
+
+	if err := s.SetNodePaused("worker1", true); err != nil {
+		t.Fatal(err)
+	}
+	if j := claim(t, s); j != nil {
+		t.Fatalf("a paused node claimed %s", j.ID)
+	}
+	// Another worker still gets the job the paused one left.
+	if j, err := s.Claim("worker2", time.Minute); err != nil || j == nil || j.ID != "b" {
+		t.Fatalf("worker2 claimed %+v, %v", j, err)
+	}
+	// The job held before the pause still finishes.
+	if err := s.Complete(running.ID, running.LeaseID, "{}", ""); err != nil {
+		t.Errorf("a job held before the pause must finish: %v", err)
+	}
+
+	nodes, err := s.LoadNodes()
+	if err != nil || len(nodes) != 2 || !nodes[0].Paused || nodes[1].Paused {
+		t.Fatalf("LoadNodes = %+v, %v", nodes, err)
+	}
+	if err := s.SetNodePaused("worker1", false); err != nil {
+		t.Fatal(err)
+	}
+	addJob(t, s, "c", model.PriorityNew)
+	if j := claim(t, s); j == nil || j.ID != "c" {
+		t.Errorf("a resumed node claimed %+v", j)
+	}
+	if err := s.SetNodePaused("nobody", true); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("pausing an unknown node: %v", err)
+	}
+}
+
+func (x suite) TestCloudServersKeepHistory(t *testing.T) {
+	s, c := x.open(t, database.Options{})
+	a := &model.CloudServer{Provider: "p1", ID: "1", Name: "cloud-p1-a", Type: "t", Location: "l",
+		State: model.CloudBooting, Created: c.t.Unix(), HourlyPrice: 0.05, Currency: "EUR"}
+	b := &model.CloudServer{Provider: "p2", ID: "1", Name: "cloud-p2-b", Type: "t", Location: "l",
+		State: model.CloudReady, Created: c.t.Unix() + 1}
+	for _, srv := range []*model.CloudServer{a, b} {
+		if err := s.AddCloudServer(srv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddCloudServer(a); err == nil {
+		t.Error("the same provider and ID twice must fail")
+	}
+
+	c.add(time.Hour)
+	a.State, a.Deleted, a.Alerted, a.Resources = model.CloudDeleted, c.t.Unix(), true, "ip:9"
+	if err := s.UpdateCloudServer(a); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.CloudServers(c.t)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("CloudServers = %+v, %v", got, err)
+	}
+	if *got[0] != *a {
+		t.Errorf("round trip = %+v, want %+v", *got[0], *a)
+	}
+	// Deleted before since: only the live one remains.
+	if got, _ := s.CloudServers(c.t.Add(time.Second)); len(got) != 1 || got[0].Name != b.Name {
+		t.Errorf("history cut-off = %+v", got)
+	}
+	missing := *b
+	missing.ID = "nope"
+	if err := s.UpdateCloudServer(&missing); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("updating an unknown server: %v", err)
+	}
+}
+
+func (x suite) TestQueueQueriesForTheScaler(t *testing.T) {
+	s, c := x.open(t, database.Options{})
+	if ok, err := s.Enqueue(&model.Job{ID: "new", Path: "new.mkv", OutputPath: "new.mp4", Priority: model.PriorityNew, SourceSize: 100}); err != nil || !ok {
+		t.Fatal(err)
+	}
+	c.add(time.Second)
+	ok, err := s.Enqueue(&model.Job{ID: "bf", Path: "bf.mkv", OutputPath: "bf.mp4", Priority: model.PriorityBackfill, SourceSize: 50})
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	w, err := s.Waiting(false)
+	if err != nil || w.Count != 1 || w.SourceBytes != 100 || w.Oldest != c.t.Unix()-1 {
+		t.Fatalf("Waiting(false) = %+v, %v", w, err)
+	}
+	// Backfill counts only while it runs.
+	if w, _ := s.Waiting(true); w.Count != 1 {
+		t.Errorf("paused backfill counted: %+v", w)
+	}
+	if err := s.SetMeta(model.MetaBackfillActive, "1"); err != nil {
+		t.Fatal(err)
+	}
+	if w, _ := s.Waiting(true); w.Count != 2 || w.SourceBytes != 150 {
+		t.Errorf("Waiting(true) = %+v", w)
+	}
+
+	j := claim(t, s)
+	running, err := s.RunningByNode()
+	if err != nil || running["worker1"] != 1 {
+		t.Fatalf("RunningByNode = %v, %v", running, err)
+	}
+	if err := s.Complete(j.ID, j.LeaseID, "{}", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDone(j.ID); err != nil {
+		t.Fatal(err)
+	}
+	work, err := s.WorkByNode(c.t.Add(-time.Hour))
+	if err != nil || work["worker1"] != (model.NodeWork{Jobs: 1, SourceBytes: 100}) {
+		t.Errorf("WorkByNode = %v, %v", work, err)
+	}
+	if work, _ := s.WorkByNode(c.t.Add(time.Hour)); len(work) != 0 {
+		t.Errorf("work before since counted: %v", work)
+	}
+}

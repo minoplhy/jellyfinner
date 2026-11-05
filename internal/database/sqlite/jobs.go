@@ -96,6 +96,63 @@ func (s *Store) FailedByNode(since time.Time) (map[string]int, error) {
 	return counts, rows.Err()
 }
 
+// RunningByNode counts each node's running jobs.
+func (s *Store) RunningByNode() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT node, COUNT(*) FROM jobs WHERE state = ? AND node != '' GROUP BY node`, model.StateRunning)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var node string
+		var n int
+		if err := rows.Scan(&node, &n); err != nil {
+			return nil, err
+		}
+		counts[node] = n
+	}
+	return counts, rows.Err()
+}
+
+// WorkByNode sums, per node, the jobs that reached done since a time.
+func (s *Store) WorkByNode(since time.Time) (map[string]model.NodeWork, error) {
+	rows, err := s.db.Query(`SELECT node, COUNT(*), COALESCE(SUM(source_size), 0) FROM jobs
+		WHERE state = ? AND node != '' AND updated >= ? GROUP BY node`, model.StateDone, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	work := map[string]model.NodeWork{}
+	for rows.Next() {
+		var node string
+		var w model.NodeWork
+		if err := rows.Scan(&node, &w.Jobs, &w.SourceBytes); err != nil {
+			return nil, err
+		}
+		work[node] = w
+	}
+	return work, rows.Err()
+}
+
+// Waiting describes the queued jobs a worker could claim now. Backfill counts
+// only when asked for and running, because a paused backfill cannot be claimed.
+func (s *Store) Waiting(includeBackfill bool) (model.QueueWait, error) {
+	var w model.QueueWait
+	backfill := false
+	if includeBackfill {
+		active, err := s.Meta(model.MetaBackfillActive)
+		if err != nil {
+			return w, err
+		}
+		backfill = active == "1"
+	}
+	err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(source_size), 0), COALESCE(MIN(created), 0) FROM jobs
+		WHERE state = 'queued' AND not_before <= ? AND (priority != ? OR ?)`,
+		s.now().Unix(), model.PriorityBackfill, backfill).Scan(&w.Count, &w.SourceBytes, &w.Oldest)
+	return w, err
+}
+
 // Publishing returns jobs waiting to be published, including any left by a
 // restart.
 func (s *Store) Publishing() ([]*model.Job, error) {
@@ -123,6 +180,17 @@ func (s *Store) query(q string, args ...any) ([]*model.Job, error) {
 func (s *Store) Claim(node string, leaseFor time.Duration) (*model.Job, error) {
 	var claimed *model.Job
 	err := s.tx(func(tx *sql.Tx) error {
+		// Checked in the same transaction, so a pause holds from the moment it
+		// is set, with no window for one more job. A name with no row, such
+		// as in tests, is not paused.
+		var paused bool
+		err := tx.QueryRow(`SELECT paused FROM nodes WHERE name = ?`, node).Scan(&paused)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if paused {
+			return nil
+		}
 		j, err := scanJob(tx.QueryRow(`SELECT `+jobColumns+` FROM jobs WHERE state = 'queued' AND not_before <= ?
 			ORDER BY priority DESC, created, rowid LIMIT 1`, s.now().Unix()))
 		if errors.Is(err, sql.ErrNoRows) {

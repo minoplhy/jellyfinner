@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/netip"
 	"net/url"
@@ -11,9 +13,11 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
+	"jellyfinner/internal/database"
 	"jellyfinner/internal/doctor"
 	"jellyfinner/internal/jellyfin"
 	"jellyfinner/internal/model"
+	"jellyfinner/internal/notify"
 	"jellyfinner/internal/orchestrator"
 )
 
@@ -50,6 +54,7 @@ func runDoctor(envFile string) error {
 			r.Note("no nodes yet: add one with orchestrator node add NAME")
 		}
 		viewerNodes(r, cfg, nodes)
+		checkCloud(r, cfg, store)
 	}
 
 	if webhookUnreachable(cfg) {
@@ -61,6 +66,35 @@ func runDoctor(envFile string) error {
 	adminNotes(r, cfg)
 	checkJellyfin(r, cfg)
 	return r.Done()
+}
+
+// checkCloud validates each listed provider against its API, and fails while
+// any rented server's delete is unconfirmed, because it may still be billed.
+func checkCloud(r *doctor.Report, cfg *config.Config, store database.Store) {
+	svc := orchestrator.New(cfg, store, notify.New("", ""), nil, log.New(io.Discard, "", 0))
+	r.Check("every provider with a tracked server is still listed", orchestrator.CheckCloudProviders(svc))
+	rows, err := store.CloudServers(time.Now())
+	r.Check("cloud server list", err)
+	for _, row := range rows {
+		if row.State == model.CloudDeleting && time.Since(time.Unix(row.DeleteAt, 0)) >= cfg.Cloud.DeleteTimeout {
+			r.Check("cloud server "+row.Name, fmt.Errorf("deleting %s server %s is not confirmed and it may still be billed: check the %s console",
+				row.Provider, row.ID, row.Provider))
+		}
+	}
+	if !cfg.Cloud.Enabled() {
+		return
+	}
+	providers, err := orchestrator.BuildProviders(cfg.Cloud)
+	r.Check("cloud provider settings", err)
+	if err != nil {
+		return
+	}
+	for _, p := range providers {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		r.Check(p.Name()+": token, project, types, locations and image", p.Check(ctx))
+		cancel()
+	}
+	r.Note("cloud providers are tried in this order: " + strings.Join(providerNames(providers), ", "))
 }
 
 // adminNotes points out admin UI settings that work but are likely wrong.

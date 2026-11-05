@@ -85,9 +85,17 @@ orchestrator node add worker2
 orchestrator node list
 orchestrator node rotate worker2
 orchestrator node remove worker2
+orchestrator node pause worker2        # finishes its job, then takes no more
+orchestrator node resume worker2
+
+orchestrator cloud status              # rented workers, if CLOUD_PROVIDERS lists any
+orchestrator cloud estimate
+orchestrator cloud pause
 
 orchestrator switch-mode manual
 ```
+
+Cloud workers are optional: the orchestrator can rent servers by the hour from the providers you add, and delete them when idle. See [Cloud workers](deploy/docker/README.md#cloud-workers).
 
 Source paths are relative to `ORIGINALS_DIR`. `switch-mode` needs `ENCODE_MODE` changed first, and `serve` stopped.
 
