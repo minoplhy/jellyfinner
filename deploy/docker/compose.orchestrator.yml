@@ -92,7 +92,10 @@ services:
       # compose project, join its network instead, as shown at the end.
       - 127.0.0.1:8200:8200 # Control API, for workers and edge nodes
       - 127.0.0.1:8202:8202 # Admin UI
-      # - 127.0.0.1:8201:8201 # Manual mode: playback events from a Jellyfin on this host
+      # Manual mode: playback events from Jellyfin. On this host, Jellyfin uses
+      # http://127.0.0.1:8201/webhook/jellyfin. On another machine, proxy a path
+      # of its own here; it is not part of CONTROL_URL or ADMIN_URL.
+      # - 127.0.0.1:8201:8201
     healthcheck:
       test: ["CMD", "orchestrator", "health", "serve"]
       interval: 30s

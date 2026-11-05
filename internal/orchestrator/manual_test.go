@@ -342,6 +342,50 @@ func TestSwitchAutoToManualCancelsQueuedAndCreatesStubs(t *testing.T) {
 	}
 }
 
+// A proxy may keep its path prefix, as at https://example.com/hook. The token
+// still guards it, and other paths are not answered.
+func TestWebhookUnderAPath(t *testing.T) {
+	f := newManual(t)
+	f.write("a.mkv", "a")
+	f.stabilise()
+	f.library.paths["item1"] = filepath.Join(f.cfg.LibraryDir, "a.mp4")
+	server := httptest.NewServer(f.svc.WebhookHandler())
+	defer server.Close()
+	send := func(method, path, token string) int {
+		req, err := http.NewRequest(method, server.URL+path, strings.NewReader(`{"NotificationType":"PlaybackStart","ItemId":"item1","UserId":"u"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Webhook-Token", token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := send(http.MethodPost, "/hook/webhook/jellyfin", "wrong"); got != http.StatusUnauthorized {
+		t.Errorf("prefixed, wrong token: %d", got)
+	}
+	for path, want := range map[string]int{"/": http.StatusNotFound, "/hook/webhook": http.StatusNotFound, "/webhook/jellyfin/x": http.StatusNotFound} {
+		if got := send(http.MethodPost, path, webhookToken); got != want {
+			t.Errorf("POST %s = %d, want %d", path, got, want)
+		}
+	}
+	if got := send(http.MethodGet, "/hook/webhook/jellyfin", webhookToken); got != http.StatusMethodNotAllowed {
+		t.Errorf("GET = %d", got)
+	}
+	if len(f.jobs()) != 0 {
+		t.Fatal("a refused request queued work")
+	}
+	if got := send(http.MethodPost, "/hook/webhook/jellyfin", webhookToken); got != http.StatusNoContent {
+		t.Errorf("prefixed, good token: %d", got)
+	}
+	if len(f.jobs()) != 1 {
+		t.Error("a prefixed webhook must queue the stub")
+	}
+}
+
 func TestWebhookAuth(t *testing.T) {
 	f := newManual(t)
 	f.write("a.mkv", "a")
@@ -351,8 +395,9 @@ func TestWebhookAuth(t *testing.T) {
 	defer server.Close()
 
 	body := `{"NotificationType":"PlaybackStart","ItemId":"item1","UserId":"u"}`
+	path := "/webhook/jellyfin"
 	post := func(token, body string) int {
-		req, err := http.NewRequest(http.MethodPost, server.URL+"/webhook/jellyfin", strings.NewReader(body))
+		req, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}

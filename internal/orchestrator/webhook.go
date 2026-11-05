@@ -25,10 +25,23 @@ type PlaybackEvent struct {
 	SessionID        string `json:"SessionId"`
 }
 
-// WebhookHandler receives playback events. It only exists in manual mode.
+// webhookPath ends every URL the webhook answers.
+const webhookPath = "/webhook/jellyfin"
+
+// WebhookHandler receives playback events. It only exists in manual mode. It
+// answers under any path prefix, such as /hook/webhook/jellyfin, so a reverse
+// proxy may strip the prefix or keep it; the token is what guards it.
 func (s *Service) WebhookHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /webhook/jellyfin", func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != webhookPath && !strings.HasSuffix(r.URL.Path, webhookPath) {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		got := r.Header.Get("X-Webhook-Token")
 		if subtle.ConstantTimeCompare([]byte(got), []byte(s.Cfg.WebhookToken)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -47,7 +60,6 @@ func (s *Service) WebhookHandler() http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-	return mux
 }
 
 // HandlePlayback queues the title if the viewer pressed play on a stub.

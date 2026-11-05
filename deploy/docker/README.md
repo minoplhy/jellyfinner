@@ -157,6 +157,7 @@ Subdomains need nothing extra, and paths such as `https://example.com/jellyfinne
 | Admin UI | Put the path in `ADMIN_URL`, such as `https://example.com/jellyfinner-admin` |
 | Jellyfin and the router | Set Jellyfin's Base URL under Dashboard, Networking, and include it in `JELLYFIN_URL`, such as `http://host.docker.internal:8096/jellyfin`. Proxy that path to the router or to Jellyfin |
 | Edge node | Add it with `--url https://example.com/edge1`. `edge-serve` needs no setting |
+| Webhook, manual mode | Proxy its own path to port `8201`, such as `https://example.com/hook`, and give Jellyfin the full URL, `https://example.com/hook/webhook/jellyfin`. No setting. It is not part of `CONTROL_URL` or `ADMIN_URL` |
 
 HTTP/2 on your proxy is fine, such as nginx with `http2 on;`. File transfers use HTTP/1.1 on purpose, so parallel streams get their own connections, and every other request may use HTTP/2.
 
@@ -226,12 +227,22 @@ Then install the Webhook plugin in Jellyfin and add a Generic destination:
 
 | Setting | Value |
 |---|---|
-| Webhook URL | `http://orchestrator:8201/webhook/jellyfin` for Jellyfin on the `jellyfinner` network. For Jellyfin on the host, uncomment port `8201` and use `http://127.0.0.1:8201/webhook/jellyfin` |
+| Webhook URL | `http://orchestrator:8201/webhook/jellyfin` for Jellyfin on the `jellyfinner` network. For Jellyfin on the host, uncomment port `8201` and use `http://127.0.0.1:8201/webhook/jellyfin`. For Jellyfin on another machine, see below |
 | Notification type | Playback Start |
 | Template | The contents of [../jellyfin-webhook.json](../jellyfin-webhook.json) |
 | Header | `X-Webhook-Token`, with your `WEBHOOK_TOKEN` |
 
 Keep the port on `127.0.0.1` or a private address. To change the mode of a running deployment, use `orchestrator switch-mode`, with `serve` stopped.
+
+**Jellyfin on another machine.** The webhook is its own listener on port `8201`. It is not served at `CONTROL_URL` or `ADMIN_URL`: a playback event sent there gets 401 or 404. Uncomment `127.0.0.1:8201:8201`, and give it its own HTTPS path on your proxy, such as `https://example.com/hook`:
+
+```nginx
+location /hook/ {
+    proxy_pass http://127.0.0.1:8201;
+}
+```
+
+Then set the Webhook URL to `https://example.com/hook/webhook/jellyfin`. The listener answers with or without the prefix, so the proxy may keep it or strip it. Over the internet the `X-Webhook-Token` header is all that guards this URL, so keep `WEBHOOK_TOKEN` long and random, and if you can, let only Jellyfin's address reach the path, such as with nginx `allow` and `deny`. A private network such as WireGuard between the two machines works too: then use the orchestrator's private address, as `http://10.8.0.1:8201/webhook/jellyfin`, and publish the port on that address instead of `127.0.0.1`.
 
 ## Images and updates
 
