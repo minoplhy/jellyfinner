@@ -676,3 +676,81 @@ func (x suite) TestQueueQueriesForTheScaler(t *testing.T) {
 		t.Errorf("work before since counted: %v", work)
 	}
 }
+
+func (x suite) TestOutcomesAndJobTiming(t *testing.T) {
+	s, c := x.open(t, database.Options{})
+	if first, err := s.FirstActivity(); err != nil || first != 0 {
+		t.Fatalf("FirstActivity on empty store = %d, %v", first, err)
+	}
+	start := c.t
+	for _, id := range []string{"done", "failed", "cancelled", "queued"} {
+		ok, err := s.Enqueue(&model.Job{ID: id, Path: id + ".mkv", OutputPath: id + ".mp4", Priority: model.PriorityNew, SourceSize: 10})
+		if err != nil || !ok {
+			t.Fatal(err)
+		}
+	}
+	if first, _ := s.FirstActivity(); first != start.Unix() {
+		t.Errorf("FirstActivity = %d, want %d", first, start.Unix())
+	}
+
+	// A failed first attempt, then a retry: the times cover the last attempt.
+	j := claim(t, s)
+	if j.ID != "done" || j.Started != c.t.Unix() || j.Finished != 0 {
+		t.Fatalf("claimed %+v", j)
+	}
+	c.add(time.Minute)
+	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	c.add(time.Hour)
+	j = claim(t, s)
+	if j.ID != "done" || j.Attempts != 2 {
+		t.Fatalf("retry claimed %+v", j)
+	}
+	claimedAt := c.t.Unix()
+	c.add(30 * time.Minute)
+	if err := s.Complete(j.ID, j.LeaseID, `{"video_copy":true}`, ""); err != nil {
+		t.Fatal(err)
+	}
+	finishedAt := c.t.Unix()
+	c.add(time.Minute)
+	if err := s.MarkDone(j.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	c.add(time.Minute)
+	f := claim(t, s)
+	if _, err := s.Fail(f.ID, f.LeaseID, "boom", "", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Cancel("cancelled"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Outcomes(start, c.t.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := map[string]model.JobOutcome{}
+	for _, o := range got {
+		states[o.State] = o
+	}
+	if len(got) != 3 || len(states) != 3 {
+		t.Fatalf("Outcomes = %+v, want done, failed and cancelled only", got)
+	}
+	d := states[model.StateDone]
+	if d.Node != "worker1" || d.Attempts != 2 || d.SourceSize != 10 || d.Started != claimedAt || d.Finished != finishedAt ||
+		d.Manifest != `{"video_copy":true}` || !d.Timed() {
+		t.Errorf("done outcome = %+v", d)
+	}
+	if states[model.StateCancelled].Timed() {
+		t.Errorf("never-claimed job counts as timed: %+v", states[model.StateCancelled])
+	}
+	// [from, to): a job ending exactly at to belongs to the next period.
+	if got, _ := s.Outcomes(start, c.t); len(got) != 1 || got[0].State != model.StateDone {
+		t.Errorf("Outcomes up to now, exclusive = %+v, want only the earlier done job", got)
+	}
+	if got, _ := s.Outcomes(c.t.Add(time.Second), c.t.Add(time.Hour)); len(got) != 0 {
+		t.Errorf("Outcomes after the fact = %+v", got)
+	}
+}

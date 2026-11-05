@@ -80,6 +80,11 @@ type JobStore interface {
 	// Waiting describes the queued jobs a worker could claim now. Backfill
 	// jobs count only when includeBackfill is set and backfill is running.
 	Waiting(includeBackfill bool) (model.QueueWait, error)
+	// Outcomes returns jobs that were published, failed or were cancelled in
+	// [from, to), for usage history.
+	Outcomes(from, to time.Time) ([]model.JobOutcome, error)
+	// FirstActivity returns when the first job was queued, or 0.
+	FirstActivity() (int64, error)
 	// StateCounts returns the number of jobs in each state.
 	StateCounts() (map[string]int, error)
 	// HasActive reports whether a source has a job queued, running or

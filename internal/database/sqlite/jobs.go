@@ -14,13 +14,13 @@ import (
 
 const jobColumns = `id, path, output_path, source_size, source_mtime, revision, profile, priority,
 	state, attempts, lease_id, node, stage, fraction, reason, force_encode, software,
-	error, log, manifest, created, updated`
+	error, log, manifest, created, updated, started, finished`
 
 func scanJob(row interface{ Scan(...any) error }) (*model.Job, error) {
 	var j model.Job
 	err := row.Scan(&j.ID, &j.Path, &j.OutputPath, &j.SourceSize, &j.SourceMtime, &j.Revision, &j.Profile, &j.Priority,
 		&j.State, &j.Attempts, &j.LeaseID, &j.Node, &j.Stage, &j.Fraction, &j.Reason, &j.ForceEncode, &j.Software,
-		&j.Error, &j.Log, &j.Manifest, &j.Created, &j.Updated)
+		&j.Error, &j.Log, &j.Manifest, &j.Created, &j.Updated, &j.Started, &j.Finished)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +135,34 @@ func (s *Store) WorkByNode(since time.Time) (map[string]model.NodeWork, error) {
 	return work, rows.Err()
 }
 
+// Outcomes returns jobs that ended in [from, to): published, failed or
+// cancelled. A published job's updated time is when it reached the library.
+func (s *Store) Outcomes(from, to time.Time) ([]model.JobOutcome, error) {
+	rows, err := s.db.Query(`SELECT node, state, source_size, attempts, started, finished, updated, manifest
+		FROM jobs WHERE state IN (?, ?, ?) AND updated >= ? AND updated < ? ORDER BY updated`,
+		model.StateDone, model.StateFailed, model.StateCancelled, from.Unix(), to.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.JobOutcome
+	for rows.Next() {
+		var o model.JobOutcome
+		if err := rows.Scan(&o.Node, &o.State, &o.SourceSize, &o.Attempts, &o.Started, &o.Finished, &o.Updated, &o.Manifest); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// FirstActivity returns when the first job was queued, or 0 with no jobs.
+func (s *Store) FirstActivity() (int64, error) {
+	var first sql.NullInt64
+	err := s.db.QueryRow(`SELECT MIN(created) FROM jobs`).Scan(&first)
+	return first.Int64, err
+}
+
 // Waiting describes the queued jobs a worker could claim now. Backfill counts
 // only when asked for and running, because a paused backfill cannot be claimed.
 func (s *Store) Waiting(includeBackfill bool) (model.QueueWait, error) {
@@ -215,8 +243,9 @@ func (s *Store) Claim(node string, leaseFor time.Duration) (*model.Job, error) {
 		j.State = model.StateRunning
 		now := s.now()
 		_, err = tx.Exec(`UPDATE jobs SET state = ?, lease_id = ?, lease_expires = ?, node = ?,
-			attempts = ?, stage = '', fraction = 0, error = '', updated = ? WHERE id = ?`,
-			model.StateRunning, j.LeaseID, now.Add(leaseFor).Unix(), node, j.Attempts, now.Unix(), j.ID)
+			attempts = ?, stage = '', fraction = 0, error = '', updated = ?, started = ?, finished = 0 WHERE id = ?`,
+			model.StateRunning, j.LeaseID, now.Add(leaseFor).Unix(), node, j.Attempts, now.Unix(), now.Unix(), j.ID)
+		j.Started, j.Finished = now.Unix(), 0
 		claimed = j
 		return err
 	})
@@ -256,8 +285,8 @@ func (s *Store) Heartbeat(id, lease, stage string, fraction float64, leaseFor ti
 // reaches the library until the orchestrator has checked the upload.
 func (s *Store) Complete(id, lease, manifest, log string) error {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, manifest = ?, log = ?, stage = 'publish', fraction = 1,
-		lease_id = '', updated = ? WHERE id = ? AND lease_id = ? AND lease_id != '' AND state = ?`,
-		model.StatePublishing, manifest, log, s.now().Unix(), id, lease, model.StateRunning)
+		lease_id = '', updated = ?, finished = ? WHERE id = ? AND lease_id = ? AND lease_id != '' AND state = ?`,
+		model.StatePublishing, manifest, log, s.now().Unix(), s.now().Unix(), id, lease, model.StateRunning)
 	return leaseResult(res, err)
 }
 

@@ -212,9 +212,10 @@ func cloudEstimate(ctx context.Context, c *orchestrator.Cloud) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Queue: %d titles, %.1f GB of source.\n\n", est.QueueTitles, est.QueueGB)
+	fmt.Printf("Queue: %d titles, %.1f GB of source. Backlog, backfill included: %d titles, %.1f GB.\n\n",
+		est.QueueTitles, est.QueueGB, est.BacklogTitles, est.BacklogGB)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "PROVIDER\tTYPE\tLOCATION\tPER HOUR\tMEASURED\tGB PER HOUR\tPER TITLE\tTO CLEAR QUEUE")
+	fmt.Fprintln(w, "PROVIDER\tTYPE\tLOCATION\tPER HOUR\tMEASURED\tGB PER HOUR\tPER TITLE\tTO CLEAR QUEUE\tTO FINISH BACKLOG")
 	measured := false
 	for _, r := range est.Rows {
 		perHour := "price unavailable"
@@ -224,7 +225,7 @@ func cloudEstimate(ctx context.Context, c *orchestrator.Cloud) error {
 				perHour += " incl. tax"
 			}
 		}
-		basis, gb, title, queue := "no jobs yet", "-", "-", "-"
+		basis, gb, title, queue, backlog := "no jobs yet", "-", "-", "-", "-"
 		if r.Jobs > 0 {
 			measured = true
 			basis = fmt.Sprintf("%d jobs", r.Jobs)
@@ -233,8 +234,11 @@ func cloudEstimate(ctx context.Context, c *orchestrator.Cloud) error {
 			if r.QueueHours > 0 {
 				queue = fmt.Sprintf("%s, about %.1f h", money(r.QueueCost, r.Currency), r.QueueHours)
 			}
+			if r.BacklogHours > 0 {
+				backlog = fmt.Sprintf("%s, about %.1f h", money(r.BacklogCost, r.Currency), r.BacklogHours)
+			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Provider, r.Type, r.Location, perHour, basis, gb, title, queue)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Provider, r.Type, r.Location, perHour, basis, gb, title, queue, backlog)
 	}
 	if err := w.Flush(); err != nil {
 		return err

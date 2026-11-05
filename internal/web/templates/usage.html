@@ -1,0 +1,118 @@
+{{define "content"}}
+{{with .Content}}
+<div class="page-head">
+  <h1>Usage</h1>
+  <div class="actions">
+    {{if not .Prev.IsZero}}<a class="button" href="{{base}}/usage?month={{month .Prev}}" rel="prev">◀ {{.Prev.Format "January 2006"}}</a>{{end}}
+    <b>{{.Month.Format "January 2006"}}</b>
+    {{if not .Next.IsZero}}<a class="button" href="{{base}}/usage?month={{month .Next}}" rel="next">{{.Next.Format "January 2006"}} ▶</a>{{end}}
+  </div>
+</div>
+<p class="muted small">A calendar month in UTC, the same days the cloud limits count. The backlog at the bottom is always as it stands now.</p>
+{{template "usagebody" .}}
+{{end}}
+{{end}}
+
+{{define "usagebody"}}
+<div id="usage-body"{{if .Current}} data-poll hx-get="{{base}}/fragments/usage" hx-trigger="every 60s" hx-swap="outerHTML"{{end}}>
+<div class="tiles">
+  <div class="tile"><b>{{.Total.Published}}</b><span>titles published</span></div>
+  <div class="tile"><b>{{size .Total.SourceBytes}}</b><span>source processed</span></div>
+  <div class="tile"><b>{{size .TrafficBytes}}</b><span>worker traffic, at least</span></div>
+  {{if .CloudOn}}<div class="tile"><b>{{range $i, $m := .CloudTotal}}{{if $i}}<br>{{end}}{{money $m.Amount $m.Currency}}{{else}}none{{end}}</b><span>cloud, estimated</span></div>{{end}}
+  {{if .Total.Failed}}<a class="tile alert" href="{{base}}/queue?state=failed"><b>{{.Total.Failed}}</b><span>failed</span></a>{{end}}
+</div>
+{{if .Projected}}<p class="muted small">If the rest of the month is like the part so far: about {{size .ProjectedTraffic}} of worker traffic{{range .ProjectedCloud}}, {{money .Amount .Currency}} cloud{{end}}.</p>{{end}}
+
+<h2>Work done</h2>
+<div class="panel flush">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Worker</th><th class="num">Published</th><th class="num">Encoded</th><th class="num">Stream copy</th><th class="num">Retries</th><th class="num">Failed</th><th class="num">Cancelled</th><th class="num">Source</th><th class="num">Speed, GB per hour</th></tr></thead>
+    <tbody>
+    {{range .Work}}{{template "workrow" .}}{{else}}<tr><td class="empty" colspan="9">No job finished this month.</td></tr>{{end}}
+    {{if .Work}}{{template "workrow" .Total}}{{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+<p class="muted small">Speed is source GB per hour from claim to hand-back: pull, encode, verify and push. It counts only jobs timed since timing was added, and says how many.</p>
+
+<h2>Traffic estimate</h2>
+<div class="panel flush">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Worker</th><th class="num">Downloaded, source</th><th class="num">Uploaded, encodes</th><th class="num">Total</th></tr></thead>
+    <tbody>
+    {{range .Work}}<tr><td>{{.Name}}</td><td class="num">{{size .SourceBytes}}</td><td class="num">{{size .OutputBytes}}</td><td class="num">{{size (addBytes .SourceBytes .OutputBytes)}}</td></tr>
+    {{else}}<tr><td class="empty" colspan="4">No traffic this month.</td></tr>{{end}}
+    {{if .Work}}<tr><td><b>Total</b></td><td class="num"><b>{{size .Total.SourceBytes}}</b></td><td class="num"><b>{{size .Total.OutputBytes}}</b></td><td class="num"><b>{{size .TrafficBytes}}</b></td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+<p class="muted small">The orchestrator node moves the same total the other way: it sends the sources and receives the encodes.
+<b>At least</b>: only published titles count. Failed attempts and retries moved data too, and a retry on the same worker skips the download. Edge cache copies and viewer streaming are not included.</p>
+
+{{if .CloudOn}}
+<h2>Cloud spending</h2>
+<div class="panel flush">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Provider</th><th>Type</th><th class="num">Servers</th><th class="num">Billed hours</th><th class="num">Cost</th><th class="num">Titles</th><th class="num">Per title</th></tr></thead>
+    <tbody>
+    {{range .CloudSpend}}
+    <tr><td>{{.Provider}}</td><td>{{.Type}}</td><td class="num">{{.Servers}}</td><td class="num">{{hours .Hours}}</td><td class="num nowrap">{{money .Cost .Currency}}</td>
+      <td class="num">{{.Titles}}</td><td class="num nowrap">{{if .Titles}}{{money .CostPerTitle .Currency}}{{else}}<span class="muted">—</span>{{end}}</td></tr>
+    {{else}}<tr><td class="empty" colspan="7">No cloud server ran this month.</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+{{end}}
+
+<h2>Backlog forecast</h2>
+<p class="small">Left now: <b>{{.Backlog.Titles}}</b> titles, <b>{{size .Backlog.Bytes}}</b> of source, the queue and the backfill not yet queued.</p>
+{{if or .Backlog.Titles .Backlog.Cloud}}
+<div class="panel flush">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Who</th><th>Measured, last 30 days</th><th class="num">GB per hour</th><th class="num">To finish</th></tr></thead>
+    <tbody>
+    <tr><td>Your workers together</td>
+      {{if .Backlog.OwnGBPerHour}}<td>{{.Backlog.OwnWorkers}} workers, {{.Backlog.OwnJobs}} timed jobs</td><td class="num">{{gbph .Backlog.OwnGBPerHour}}</td>
+      <td class="num nowrap">{{if .Backlog.BudgetBound}}at least {{printf "%.1f" .Backlog.OwnDays}} days, set by BACKFILL_DAILY_GB{{else}}about {{printf "%.1f" .Backlog.OwnDays}} days{{end}}</td>
+      {{else}}<td class="muted">no timed jobs yet</td><td class="num muted">—</td>
+      <td class="num nowrap">{{if .Backlog.BudgetDays}}at least {{printf "%.1f" .Backlog.BudgetDays}} days, set by BACKFILL_DAILY_GB{{else}}<span class="muted">—</span>{{end}}</td>{{end}}
+    </tr>
+    {{range .Backlog.Cloud}}
+    <tr><td>{{.Provider}} {{.Type}} in {{.Location}}{{if .Currency}}, {{money .Hourly .Currency}} an hour{{end}}</td>
+      {{if .Jobs}}<td>{{.Jobs}} jobs</td><td class="num">{{gbph .GBPerHour}}</td>
+      <td class="num nowrap">{{if .BacklogHours}}about {{hours .BacklogHours}} billed hours, {{money .BacklogCost .Currency}}{{else}}—{{end}}</td>
+      {{else}}<td class="muted">no jobs yet</td><td class="num muted">—</td><td class="num muted">—</td>{{end}}
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+<p class="muted small">One server of a type at a time. Cloud speed counts every billed hour, idle ones included, so it is what renting really delivered.{{if .Backlog.Cloud}} Rows follow your CLOUD_PROVIDERS order; prices never change it.{{end}}</p>
+{{end}}
+
+{{if .CloudOn}}
+<p class="muted small"><b>Estimates</b>, excluding VAT and traffic. Spending uses the price quoted when each server started{{if not .Backlog.PricedAt.IsZero}}; the forecast uses prices fetched {{date .Backlog.PricedAt}} from each provider's API{{end}}.</p>
+{{template "billingnotes" .Billing}}
+{{end}}
+</div>
+{{end}}
+
+{{/* workrow is one worker's line in Work done. */}}
+{{define "workrow"}}
+<tr>
+  <td>{{if eq .Name "Total"}}<b>Total</b>{{else}}{{.Name}}{{end}}</td>
+  <td class="num">{{.Published}}</td><td class="num">{{.Encodes}}</td><td class="num">{{.Copies}}</td><td class="num">{{.Retries}}</td>
+  <td class="num">{{if .Failed}}<span class="error">{{.Failed}}</span>{{else}}0{{end}}</td><td class="num">{{.Cancelled}}</td>
+  <td class="num">{{size .SourceBytes}}</td>
+  <td class="num nowrap">{{if .TimedJobs}}{{gbph .GBPerHour}} <span class="muted">({{.TimedJobs}} timed)</span>{{else}}<span class="muted">not timed</span>{{end}}</td>
+</tr>
+{{end}}

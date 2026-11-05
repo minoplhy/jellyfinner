@@ -180,7 +180,7 @@ func (f *fixture) post(c *http.Client, path string, form url.Values) (int, strin
 func TestEveryPageNeedsLogin(t *testing.T) {
 	f := newFixture(t)
 	c := f.client()
-	for _, path := range []string{"/", "/queue", "/library", "/nodes", "/jobs/x", "/jobs/x/log"} {
+	for _, path := range []string{"/", "/queue", "/library", "/nodes", "/usage", "/jobs/x", "/jobs/x/log"} {
 		got, _ := f.get(c, path)
 		if got != http.StatusSeeOther {
 			t.Errorf("GET %s = %d", path, got)
@@ -193,7 +193,7 @@ func TestEveryPageNeedsLogin(t *testing.T) {
 			t.Errorf("POST %s = %d", path, got)
 		}
 	}
-	for _, path := range []string{"/fragments/queue", "/fragments/dashboard", "/fragments/library", "/fragments/nodes/workers", "/fragments/jobs/x"} {
+	for _, path := range []string{"/fragments/queue", "/fragments/dashboard", "/fragments/library", "/fragments/nodes/workers", "/fragments/usage", "/fragments/jobs/x"} {
 		req, err := http.NewRequest(http.MethodGet, f.server.URL+path, nil)
 		if err != nil {
 			t.Fatal(err)

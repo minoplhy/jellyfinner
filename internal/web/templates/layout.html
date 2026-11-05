@@ -20,6 +20,7 @@
       <a href="{{base}}/queue"{{if eq .Page "queue"}} aria-current="page"{{end}}>Queue</a>
       <a href="{{base}}/library"{{if eq .Page "library"}} aria-current="page"{{end}}>Library</a>
       <a href="{{base}}/nodes"{{if eq .Page "nodes"}} aria-current="page"{{end}}>Nodes</a>
+      <a href="{{base}}/usage"{{if eq .Page "usage"}} aria-current="page"{{end}}>Usage</a>
     </nav>
     <div class="who">
       <span class="badge b-{{.Mode}}" title="Set by ENCODE_MODE. To change it, stop serve, change ENCODE_MODE, then run orchestrator switch-mode.">{{.Mode}} mode</span>
@@ -62,6 +63,16 @@
 {{if or (eq .State "failed") (eq .State "cancelled")}}
 <form method="post" action="{{base}}/jobs/{{.ID}}/retry" hx-post="{{base}}/jobs/{{.ID}}/retry" hx-target="{{$target}}" hx-swap="outerHTML"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="from" value="{{.From}}"><button class="small">Retry</button></form>
 {{end}}
+{{end}}
+
+{{/* billingnotes lists how each listed cloud provider bills, with sources. */}}
+{{define "billingnotes"}}
+<h3>How each provider bills</h3>
+<ul class="small">
+{{range .}}<li><b>{{.Name}}</b>: {{.Billing.Note}}
+  {{range .Billing.Sources}} <a href="{{.URL}}" rel="noreferrer" target="_blank">{{.Title}}</a>{{end}}
+  <span class="muted">(checked {{.Billing.Checked}})</span></li>{{end}}
+</ul>
 {{end}}
 
 {{/* toast is a message appended to the toast region by an htmx response. */}}

@@ -66,38 +66,12 @@
 
 <div class="meta">
   <span>Billed hours today (UTC): <b>{{hours .Usage.HoursToday}}</b> of {{hours .HoursCap}} allowed</span>
-  {{range .Usage.Spend}}<span>{{.Provider}}: about <b>{{money .Today .Currency}}</b> today, {{money .Month .Currency}} this month</span>{{end}}
+  {{range .Usage.Spend}}{{if .HoursToday}}<span>{{.Provider}}: about <b>{{money .Today .Currency}}</b> today</span>{{end}}{{end}}
+  <span><a href="{{base}}/usage">Spending, estimates and history: Usage</a></span>
 </div>
+<p class="muted small"><b>Estimates</b>, excluding VAT and traffic, at the price quoted when each server started.</p>
 
-<h3>Estimated cost by option</h3>
-<p class="muted small">Queue: {{.Estimate.QueueTitles}} titles, {{printf "%.1f" .Estimate.QueueGB}} GB of source.
-{{if not .Measured}}Only prices so far: speed is measured from real jobs, never guessed, so per-title and queue costs appear once servers have finished work.{{end}}</p>
-<div class="panel flush">
-  <div class="table-wrap">
-  <table>
-    <thead><tr><th>Provider</th><th>Type</th><th>Location</th><th class="num">Per hour</th><th>Measured</th><th class="num">GB per hour</th><th class="num">Per title</th><th class="num">To clear the queue</th></tr></thead>
-    <tbody>
-    {{range .Estimate.Rows}}
-    <tr>
-      <td>{{.Provider}}</td><td>{{.Type}}</td><td>{{.Location}}</td>
-      <td class="num nowrap">{{if .Currency}}{{money .Hourly .Currency}}{{if .Taxed}} incl. tax{{end}}{{else}}<span class="muted">price unavailable</span>{{end}}</td>
-      {{if .Jobs}}<td>{{.Jobs}} jobs</td><td class="num">{{printf "%.1f" .GBPerHour}}</td><td class="num nowrap">{{money .CostPerTitle .Currency}}</td>
-      <td class="num nowrap">{{if .QueueHours}}{{money .QueueCost .Currency}}, about {{hours .QueueHours}} h{{else}}—{{end}}</td>
-      {{else}}<td class="muted">no jobs yet</td><td class="num muted">—</td><td class="num muted">—</td><td class="num muted">—</td>{{end}}
-    </tr>
-    {{end}}
-    </tbody>
-  </table>
-  </div>
-</div>
-<p class="muted small"><b>Estimates</b>, excluding VAT and traffic{{if not .PricedAt.IsZero}}, with prices fetched {{date .PricedAt}} from each provider's API{{end}}. Spending uses the price quoted when each server started.</p>
-
-<h3>How each provider bills</h3>
-<ul class="small">
-{{range .Billing}}<li><b>{{.Name}}</b>: {{.Billing.Note}}
-  {{range .Billing.Sources}} <a href="{{.URL}}" rel="noreferrer" target="_blank">{{.Title}}</a>{{end}}
-  <span class="muted">(checked {{.Billing.Checked}})</span></li>{{end}}
-</ul>
+{{template "billingnotes" .Billing}}
 </div>
 {{end}}
 {{end}}

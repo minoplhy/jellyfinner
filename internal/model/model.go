@@ -84,6 +84,8 @@ type Job struct {
 	Manifest    string  `json:"-"`
 	Created     int64   `json:"created"`
 	Updated     int64   `json:"updated"`
+	Started     int64   `json:"-"` // when the last attempt was claimed, 0 before timing existed
+	Finished    int64   `json:"-"` // when the last attempt was handed back, 0 until then
 }
 
 // JobFilter narrows a job listing. Empty fields match everything. Search
@@ -202,6 +204,21 @@ type NodeWork struct {
 	Jobs        int
 	SourceBytes int64
 }
+
+// JobOutcome is a finished, failed or cancelled job, for usage history.
+type JobOutcome struct {
+	Node       string
+	State      string
+	SourceSize int64
+	Attempts   int
+	Started    int64
+	Finished   int64
+	Updated    int64
+	Manifest   string
+}
+
+// Timed reports whether the job has a usable time for its last attempt.
+func (o JobOutcome) Timed() bool { return o.Started > 0 && o.Finished > o.Started }
 
 // QueueWait describes the jobs that are ready to claim now.
 type QueueWait struct {

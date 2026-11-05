@@ -65,7 +65,7 @@ docker compose exec orchestrator orchestrator node add worker1
 
 ## Everyday use
 
-The admin UI covers the queue, library and nodes, and does what the CLI does: add, rotate and remove nodes, start and pause backfill, and scan now. Set `ADMIN_ADDR` to enable it, and `ADMIN_URL` to the address people open. Login uses Jellyfin, for administrators only.
+The admin UI covers the queue, library, nodes and monthly usage, and does what the CLI does: add, rotate and remove nodes, start and pause backfill, and scan now. Set `ADMIN_ADDR` to enable it, and `ADMIN_URL` to the address people open. Login uses Jellyfin, for administrators only.
 
 ```sh
 orchestrator queue list
@@ -91,6 +91,9 @@ orchestrator node resume worker2
 orchestrator cloud status              # rented workers, if CLOUD_PROVIDERS lists any
 orchestrator cloud estimate
 orchestrator cloud pause
+
+orchestrator usage                     # a month's work, traffic and cloud spending, and the backlog
+orchestrator usage --month 2026-10
 
 orchestrator switch-mode manual
 ```

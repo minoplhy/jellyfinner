@@ -32,7 +32,7 @@ type nodesData struct {
 	Workers []workerView
 	Edges   []edgeView
 	// Cloud is filled only for the full page and its own fragment, because
-	// it may ask the providers for prices.
+	// it reads the cloud server history.
 	Cloud *cloudView
 }
 
@@ -47,9 +47,6 @@ type cloudView struct {
 	Usage    orchestrator.Usage
 	HoursCap float64
 	Billing  []orchestrator.ProviderBilling
-	Estimate orchestrator.Estimate
-	PricedAt time.Time
-	Measured bool
 	Err      string
 }
 
@@ -72,15 +69,6 @@ func (s *Server) cloudData(r *http.Request, csrf string) *cloudView {
 	}
 	if v.Usage, err = c.Usage(r.Context()); err != nil {
 		errs = append(errs, err.Error())
-	}
-	if v.Estimate, err = c.Estimate(r.Context()); err != nil {
-		errs = append(errs, err.Error())
-	}
-	for _, row := range v.Estimate.Rows {
-		v.Measured = v.Measured || row.Jobs > 0
-		if v.PricedAt.IsZero() || (!row.PricedAt.IsZero() && row.PricedAt.Before(v.PricedAt)) {
-			v.PricedAt = row.PricedAt
-		}
 	}
 	v.Err = strings.Join(errs, "; ")
 	return v

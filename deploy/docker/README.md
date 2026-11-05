@@ -187,6 +187,8 @@ Run `cloud down --wait` before removing a provider from `CLOUD_PROVIDERS`. The o
 
 Estimates use each provider's own prices from its API, excluding VAT and traffic, and each server keeps the price quoted when it started. Cost per title and the cost to clear the queue appear only after servers have finished real work; speed is measured, never guessed. Prices are shown for information and never change the order you set.
 
+The **Usage** page in the admin UI, and `orchestrator usage [--month YYYY-MM]`, put it together by UTC month: what each worker and cloud type published and how fast, the traffic it moved, what the cloud cost, and how long and how much the remaining backlog would take.
+
 | Provider | Partial hour | Powered off | Source, checked 2026-11-05 |
 |---|---|---|---|
 | Cherry Servers, cloud VPS, hourly | Not documented. Jellyfinner assumes a whole hour, the costlier case | Billed until terminated | [Server actions](https://www.cherryservers.com/knowledge/docs/compute/configuration-management/server-actions), [Cloud VPS](https://www.cherryservers.com/knowledge/docs/compute/virtual-servers/cloud-vps) |

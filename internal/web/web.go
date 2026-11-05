@@ -101,14 +101,17 @@ func New(svc *orchestrator.Service, auth jellyfin.API, lastSeen func() map[strin
 			}
 			return fmt.Sprintf("%.4f %s", v, currency)
 		},
-		"unixT": func(unix int64) time.Time { return time.Unix(unix, 0) },
-		"clock": func(t time.Time) string { return t.Local().Format("15:04") },
-		"date":  func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") },
-		"hours": func(v float64) string { return fmt.Sprintf("%.1f", v) },
+		"unixT":    func(unix int64) time.Time { return time.Unix(unix, 0) },
+		"clock":    func(t time.Time) string { return t.Local().Format("15:04") },
+		"date":     func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") },
+		"hours":    func(v float64) string { return fmt.Sprintf("%.1f", v) },
+		"gbph":     func(v float64) string { return fmt.Sprintf("%.2f", v) },
+		"addBytes": func(a, b int64) int64 { return a + b },
+		"month":    func(t time.Time) string { return t.Format("2006-01") },
 		// pctOf is a share of a total, for meter thresholds.
 		"pctOf": func(total int64, percent int64) int64 { return total / 100 * percent },
 	}
-	for _, page := range []string{"login", "dashboard", "queue", "job", "library", "confirm", "nodes", "nodesecret"} {
+	for _, page := range []string{"login", "dashboard", "queue", "job", "library", "confirm", "nodes", "nodesecret", "usage"} {
 		s.pages[page] = template.Must(template.New("layout.html").Funcs(funcs).
 			ParseFS(assets, "templates/layout.html", "templates/"+page+".html"))
 	}
@@ -193,6 +196,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /nodes/{node}/rotate", s.protected(s.nodeRotate))
 	mux.HandleFunc("POST /nodes/{node}/delete", s.protected(s.nodeDelete))
 	mux.HandleFunc("POST /nodes/{node}/{action}", s.protected(s.nodePause))
+	mux.HandleFunc("GET /usage", s.protected(s.usagePage))
+	mux.HandleFunc("GET /fragments/usage", s.protected(s.usageFragment))
 	mux.HandleFunc("POST /cloud/{action}", s.protected(s.cloudAction))
 	mux.HandleFunc("POST /cloud/servers/{name}/drain", s.protected(s.cloudDrain))
 	return headers(config.StripPrefix(s.base, mux))

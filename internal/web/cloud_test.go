@@ -60,10 +60,24 @@ func TestCloudSection(t *testing.T) {
 	_, body := f.get(c, "/nodes")
 	for _, want := range []string{"Cloud workers", "zeta</b>", "<b>zeta, then alpha</b>", srv.Name, "0.0500 EUR",
 		"zeta rounds up to whole hours.", "https://zeta.example/faq", "checked 2026-11-05", "excluding VAT", "Paid until",
-		"no jobs yet", "/cloud/servers/" + srv.Name + "/drain"} {
+		"/cloud/servers/" + srv.Name + "/drain", `href="/usage"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("Nodes page lacks %q", want)
 		}
+	}
+	// Estimates and history live on the Usage page alone.
+	if strings.Contains(body, "Estimated cost by option") || strings.Contains(body, "this month") {
+		t.Error("Nodes page still shows estimates or monthly spending")
+	}
+	_, body = f.get(c, "/usage")
+	for _, want := range []string{"Cloud spending", "zeta</td><td>t1</td>", "zeta t1 in l1, 0.0500 EUR an hour", "alpha t1 in l1",
+		"no jobs yet", "zeta rounds up to whole hours.", "excluding VAT", "prices never change it"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Usage page lacks %q", want)
+		}
+	}
+	if strings.Index(body, "zeta t1 in l1") > strings.Index(body, "alpha t1 in l1") {
+		t.Error("forecast rows must follow CLOUD_PROVIDERS order")
 	}
 
 	token := f.csrf(c)

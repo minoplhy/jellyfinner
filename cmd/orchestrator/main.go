@@ -52,6 +52,7 @@ const usage = `usage: orchestrator [--env FILE] COMMAND
   cloud pause|resume           stop or allow new servers
   cloud reconcile              compare each provider's list with ours
   cloud estimate               prices, measured speed and cost to clear the queue
+  usage [--month YYYY-MM]      a month's work, traffic and cloud spending, and the backlog
   switch-mode auto|manual      run with serve stopped, after changing ENCODE_MODE
   backfill start|pause|status  start needs auto mode
   edge list
@@ -102,6 +103,8 @@ func main() {
 		err = edgeCommand(*envFile, args[1:])
 	case "queue":
 		err = queueCommand(*envFile, args[1:])
+	case "usage":
+		err = usageCommand(*envFile, args[1:])
 	default:
 		fs.Usage()
 		os.Exit(2)

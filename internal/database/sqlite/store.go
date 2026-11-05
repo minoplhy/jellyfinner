@@ -136,6 +136,9 @@ var migrations = []string{
 		PRIMARY KEY (provider, id)
 	);
 	CREATE INDEX cloud_servers_state ON cloud_servers (state, deleted);`,
+	// 3: when a job's last attempt was claimed and handed back, for measured speed.
+	`ALTER TABLE jobs ADD COLUMN started INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE jobs ADD COLUMN finished INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // migrate applies whichever steps this database has not had. The transaction

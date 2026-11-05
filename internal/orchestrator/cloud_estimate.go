@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"math"
+	"sort"
 	"time"
 
 	"jellyfinner/internal/cloud"
@@ -53,34 +54,112 @@ func (c *Cloud) end(r *model.CloudServer) time.Time {
 	return c.now()
 }
 
-// Usage adds up billed hours and spending from the servers table. Prices are
-// the ones quoted when each server started.
+// CloudSpend is what one provider's servers of one type cost over a period,
+// in one currency, at the prices quoted when each started.
+type CloudSpend struct {
+	Provider string
+	Type     string
+	Currency string
+	Servers  int
+	Hours    float64
+	Cost     float64
+}
+
+// Spend adds up the billing steps that started in [from, to), for each
+// provider, type and currency. Rows follow the operator's provider order, and
+// providers no longer listed come last. Today, this month and any past month
+// all come from here.
+func (c *Cloud) Spend(from, to time.Time) ([]CloudSpend, error) {
+	rows, err := c.svc.Store.CloudServers(from)
+	if err != nil {
+		return nil, err
+	}
+	var out []CloudSpend
+	index := map[string]int{}
+	for _, r := range rows {
+		created := time.Unix(r.Created, 0)
+		if !created.Before(to) {
+			continue
+		}
+		hours := cloud.HoursStarted(created, c.end(r), c.billingStep(r.Provider), from, to)
+		if hours == 0 {
+			continue
+		}
+		key := r.Provider + "/" + r.Type + "/" + r.Currency
+		i, ok := index[key]
+		if !ok {
+			i = len(out)
+			index[key] = i
+			out = append(out, CloudSpend{Provider: r.Provider, Type: r.Type, Currency: r.Currency})
+		}
+		out[i].Servers++
+		out[i].Hours += hours
+		out[i].Cost += hours * r.HourlyPrice
+	}
+	sort.SliceStable(out, func(a, b int) bool {
+		pa, pb := c.providerRank(out[a].Provider), c.providerRank(out[b].Provider)
+		if pa != pb {
+			return pa < pb
+		}
+		return c.typeRank(out[a].Provider, out[a].Type) < c.typeRank(out[b].Provider, out[b].Type)
+	})
+	return out, nil
+}
+
+// providerRank is a provider's place in CLOUD_PROVIDERS; unlisted ones last.
+func (c *Cloud) providerRank(name string) int {
+	for i, p := range c.providers {
+		if p.Name() == name {
+			return i
+		}
+	}
+	return len(c.providers)
+}
+
+// typeRank is a type's place in that provider's TYPES; unlisted ones last.
+func (c *Cloud) typeRank(provider, typ string) int {
+	types := c.cfg.ProviderTypes(provider)
+	for i, t := range types {
+		if t == typ {
+			return i
+		}
+	}
+	return len(types)
+}
+
+// Usage adds up billed hours and spending today and this month (UTC).
 func (c *Cloud) Usage(context.Context) (Usage, error) {
 	now := c.now()
 	day, month := dayStart(now), monthStart(now)
-	rows, err := c.svc.Store.CloudServers(month)
+	today, err := c.Spend(day, day.Add(24*time.Hour))
+	if err != nil {
+		return Usage{}, err
+	}
+	thisMonth, err := c.Spend(month, month.AddDate(0, 1, 0))
 	if err != nil {
 		return Usage{}, err
 	}
 	u := Usage{SpendToday: map[string]float64{}}
 	index := map[string]int{}
-	for _, r := range rows {
-		step := c.billingStep(r.Provider)
-		created, end := time.Unix(r.Created, 0), c.end(r)
-		today := cloud.HoursStarted(created, end, step, day, day.Add(24*time.Hour))
-		monthHours := cloud.HoursStarted(created, end, step, month, month.AddDate(0, 1, 0))
-		u.HoursToday += today
-		u.SpendToday[r.Currency] += today * r.HourlyPrice
-		key := r.Provider + "/" + r.Currency
+	row := func(provider, currency string) *ProviderSpend {
+		key := provider + "/" + currency
 		i, ok := index[key]
 		if !ok {
 			i = len(u.Spend)
 			index[key] = i
-			u.Spend = append(u.Spend, ProviderSpend{Provider: r.Provider, Currency: r.Currency})
+			u.Spend = append(u.Spend, ProviderSpend{Provider: provider, Currency: currency})
 		}
-		u.Spend[i].HoursToday += today
-		u.Spend[i].Today += today * r.HourlyPrice
-		u.Spend[i].Month += monthHours * r.HourlyPrice
+		return &u.Spend[i]
+	}
+	for _, s := range thisMonth {
+		row(s.Provider, s.Currency).Month += s.Cost
+	}
+	for _, s := range today {
+		u.HoursToday += s.Hours
+		u.SpendToday[s.Currency] += s.Cost
+		r := row(s.Provider, s.Currency)
+		r.HoursToday += s.Hours
+		r.Today += s.Cost
 	}
 	return u, nil
 }
@@ -140,13 +219,43 @@ type EstimateRow struct {
 	CostPerTitle float64
 	QueueHours   float64
 	QueueCost    float64
+	BacklogHours float64
+	BacklogCost  float64
 }
 
-// Estimate is the what-if table, plus the queue it prices.
+// Estimate is the what-if table, plus the queue and backlog it prices. The
+// queue is what the scaler would rent for now; the backlog is everything left,
+// the whole library's backfill included.
 type Estimate struct {
-	Rows        []EstimateRow
-	QueueTitles int
-	QueueGB     float64
+	Rows          []EstimateRow
+	QueueTitles   int
+	QueueGB       float64
+	BacklogTitles int
+	BacklogGB     float64
+}
+
+// Backlog is all work left: every queued job, plus backfill titles not yet
+// queued. It matches what backfill status reports, plus the queue.
+func (s *Service) Backlog() (titles int, bytes int64, err error) {
+	w, err := s.Store.Waiting(true)
+	if err != nil {
+		return 0, 0, err
+	}
+	_, st, err := s.backfillPlan()
+	if err != nil {
+		return 0, 0, err
+	}
+	return w.Count + st.Remaining, w.SourceBytes + st.RemainingBytes, nil
+}
+
+// clearCost is how long, and what, gb of source takes at a measured speed.
+// Whole hours, as both providers bill.
+func clearCost(gb, gbPerHour, hourly float64) (hours, cost float64) {
+	if gb <= 0 || gbPerHour <= 0 {
+		return 0, 0
+	}
+	hours = gb / gbPerHour
+	return hours, math.Ceil(hours) * hourly
 }
 
 // Estimate prices every configured option and, where real work has been
@@ -159,6 +268,11 @@ func (c *Cloud) Estimate(ctx context.Context) (Estimate, error) {
 		return est, err
 	}
 	est.QueueTitles, est.QueueGB = w.Count, float64(w.SourceBytes)/1e9
+	titles, bytes, err := c.svc.Backlog()
+	if err != nil {
+		return est, err
+	}
+	est.BacklogTitles, est.BacklogGB = titles, float64(bytes)/1e9
 
 	since := c.now().Add(-estimateWindow)
 	rows, err := c.svc.Store.CloudServers(since)
@@ -203,10 +317,8 @@ func (c *Cloud) Estimate(ctx context.Context) (Estimate, error) {
 					row.Jobs = m.jobs
 					row.GBPerHour = float64(m.bytes) / 1e9 / m.hours
 					row.CostPerTitle = m.cost / float64(m.jobs)
-					if row.GBPerHour > 0 && est.QueueGB > 0 {
-						row.QueueHours = est.QueueGB / row.GBPerHour
-						row.QueueCost = math.Ceil(row.QueueHours) * price.Hourly
-					}
+					row.QueueHours, row.QueueCost = clearCost(est.QueueGB, row.GBPerHour, price.Hourly)
+					row.BacklogHours, row.BacklogCost = clearCost(est.BacklogGB, row.GBPerHour, price.Hourly)
 				}
 				est.Rows = append(est.Rows, row)
 			}
