@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"jellyfinner/internal/model"
 	"jellyfinner/internal/orchestrator"
-	"jellyfinner/internal/queue"
 )
 
 // workerView is an encoding node on the Nodes page.
@@ -15,7 +15,7 @@ type workerView struct {
 	Name   string
 	State  nodeState
 	Seen   time.Time
-	Active []*queue.Job
+	Active []*model.Job
 	Failed int
 }
 
@@ -43,7 +43,7 @@ func (s *Server) nodesData(csrf string) (nodesData, error) {
 		return data, err
 	}
 	seen := s.lastSeen()
-	for _, n := range s.svc.Store.Nodes() {
+	for _, n := range s.svc.Nodes.All() {
 		if n.Edge() {
 			continue
 		}
@@ -171,7 +171,7 @@ func (s *Server) nodeRotate(w http.ResponseWriter, r *http.Request, sess *sessio
 // nodeDelete revokes a node, as orchestrator node remove does.
 func (s *Server) nodeDelete(w http.ResponseWriter, r *http.Request, sess *session) {
 	name := r.PathValue("node")
-	if err := s.svc.Store.RemoveNode(name); err != nil {
+	if err := s.svc.Nodes.Remove(name); err != nil {
 		s.flash(sess, "error", err.Error())
 	} else {
 		s.log.Printf("web: %s removed node %s", sess.user, name)

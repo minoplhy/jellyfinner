@@ -1,36 +1,29 @@
-package queue
+package sqlite
 
 import (
 	"database/sql"
 	"fmt"
+
+	"jellyfinner/internal/model"
 )
 
-// Request records who asked for a title, so they can be told when it is ready
-// and the played flag set by the stub can be cleared.
-type Request struct {
-	Path     string
-	UserID   string
-	Username string
-	ItemID   string
-}
-
 // AddRequest records a viewer's request once per title.
-func (s *Store) AddRequest(r Request) error {
+func (s *Store) AddRequest(r model.Request) error {
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO requests (path, user_id, username, item_id) VALUES (?, ?, ?, ?)`,
 		r.Path, r.UserID, r.Username, r.ItemID)
 	return err
 }
 
 // TakeRequests returns a title's requests and removes them.
-func (s *Store) TakeRequests(path string) ([]Request, error) {
+func (s *Store) TakeRequests(path string) ([]model.Request, error) {
 	rows, err := s.db.Query(`DELETE FROM requests WHERE path = ? RETURNING path, user_id, username, item_id`, path)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Request
+	var out []model.Request
 	for rows.Next() {
-		var r Request
+		var r model.Request
 		if err := rows.Scan(&r.Path, &r.UserID, &r.Username, &r.ItemID); err != nil {
 			return nil, err
 		}
@@ -57,20 +50,6 @@ func (s *Store) RequestedPaths() (map[string]bool, error) {
 	return out, rows.Err()
 }
 
-// SourceByOutput finds the source that produces a library path.
-func (s *Store) SourceByOutput(output string, outputPath func(string) string) (*Source, error) {
-	sources, err := s.Sources()
-	if err != nil {
-		return nil, err
-	}
-	for _, src := range sources {
-		if outputPath(src.Path) == output {
-			return src, nil
-		}
-	}
-	return nil, ErrNotFound
-}
-
 // SwitchMode changes the active mode as one transaction. Going to auto moves
 // unencoded titles to the backlog, so nothing starts without the backfill's
 // traffic budget. Going to manual cancels queued work, and a running job
@@ -82,9 +61,9 @@ func (s *Store) SwitchMode(to string) (int64, error) {
 		var err error
 		if to == "manual" {
 			res, err = tx.Exec(`UPDATE jobs SET state = ?, updated = ? WHERE state = ?`,
-				StateCancelled, s.Now().Unix(), StateQueued)
+				model.StateCancelled, s.now().Unix(), model.StateQueued)
 			if err == nil {
-				_, err = tx.Exec(`DELETE FROM meta WHERE key = 'backfill_active'`)
+				_, err = tx.Exec(`DELETE FROM meta WHERE key = ?`, model.MetaBackfillActive)
 			}
 		} else {
 			res, err = tx.Exec(`UPDATE sources SET backlog = 1 WHERE encoded_size < 0`)
@@ -95,8 +74,8 @@ func (s *Store) SwitchMode(to string) (int64, error) {
 		if affected, err = res.RowsAffected(); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`INSERT INTO meta (key, value) VALUES ('active_mode', ?)
-			ON CONFLICT (key) DO UPDATE SET value = excluded.value`, to)
+		_, err = tx.Exec(`INSERT INTO meta (key, value) VALUES (?, ?)
+			ON CONFLICT (key) DO UPDATE SET value = excluded.value`, model.MetaActiveMode, to)
 		return err
 	})
 	return affected, err

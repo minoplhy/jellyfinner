@@ -40,12 +40,6 @@ const (
 		"form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 )
 
-// Authenticator checks logins against Jellyfin.
-type Authenticator interface {
-	Authenticate(ctx context.Context, username, password string) (admin bool, token string, err error)
-	EndSession(ctx context.Context, token string) error
-}
-
 type session struct {
 	user    string
 	csrf    string
@@ -67,7 +61,7 @@ type attempts struct {
 // Server is the admin UI.
 type Server struct {
 	svc      *orchestrator.Service
-	auth     Authenticator
+	auth     jellyfin.API // logins are checked against Jellyfin
 	lastSeen func() map[string]time.Time
 	log      *log.Logger
 	pages    map[string]*template.Template
@@ -79,7 +73,7 @@ type Server struct {
 }
 
 // New parses the templates. A broken template is a build mistake, so it panics.
-func New(svc *orchestrator.Service, auth Authenticator, lastSeen func() map[string]time.Time, logger *log.Logger) *Server {
+func New(svc *orchestrator.Service, auth jellyfin.API, lastSeen func() map[string]time.Time, logger *log.Logger) *Server {
 	s := &Server{
 		svc: svc, auth: auth, lastSeen: lastSeen, log: logger, base: svc.Cfg.AdminBasePath(),
 		pages: map[string]*template.Template{}, sessions: map[string]*session{}, logins: map[string]*attempts{},
@@ -112,7 +106,7 @@ func New(svc *orchestrator.Service, auth Authenticator, lastSeen func() map[stri
 
 // ago says how long ago something was, in its largest whole unit.
 func (s *Server) ago(t time.Time) string {
-	d := s.svc.Store.Now().Sub(t)
+	d := s.svc.Now().Sub(t)
 	switch {
 	case d < 5*time.Second:
 		return "just now"
@@ -215,7 +209,7 @@ func headers(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) now() time.Time { return s.svc.Store.Now() }
+func (s *Server) now() time.Time { return s.svc.Now() }
 
 func randomToken() (string, error) {
 	b := make([]byte, 32)

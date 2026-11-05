@@ -1,6 +1,6 @@
-// Package queue is the orchestrator's SQLite state: encode jobs with leases,
-// and the sources the watcher tracks.
-package queue
+// Package sqlite is the SQLite backend of database.Store. It is the only
+// package that speaks SQLite: schema, migrations and every query live here.
+package sqlite
 
 import (
 	"context"
@@ -11,7 +11,21 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+
+	"jellyfinner/internal/database"
+	"jellyfinner/internal/model"
 )
+
+// Driver is the name this backend registers with database.Open.
+const Driver = "sqlite"
+
+func init() {
+	database.Register(Driver, func(dsn string, opts database.Options) (database.Store, error) {
+		return Open(dsn, opts)
+	})
+}
+
+var _ database.Store = (*Store)(nil)
 
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -130,22 +144,17 @@ func migrate(db *sql.DB, steps []string) error {
 	return tx.Commit()
 }
 
-// Store wraps the database. Now is replaceable so tests can move time.
-// RetryDelay spaces out attempts, growing with each one, so a short outage
-// cannot use up a job's attempts in seconds. BackfillBudget caps the source
-// bytes backfill may start per UTC day, and 0 means no limit.
+// Store is a database.Store kept in one SQLite file.
 type Store struct {
-	db             *sql.DB
-	Now            func() time.Time
-	RetryDelay     time.Duration
-	BackfillBudget int64
-
-	nodes nodeCache
+	db         *sql.DB
+	now        func() time.Time
+	retryDelay time.Duration
+	budget     int64
 }
 
 // Open creates or opens the database. A busy timeout lets the CLI run next to
 // the server, and one connection serialises this process's writes.
-func Open(path string) (*Store, error) {
+func Open(path string, opts database.Options) (*Store, error) {
 	dsn := "file:" + url.PathEscape(path) + "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
@@ -160,7 +169,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate %s: %w", path, err)
 	}
-	return &Store{db: db, Now: time.Now, RetryDelay: time.Minute}, nil
+	return &Store{db: db, now: opts.Clock(), retryDelay: opts.RetryDelay, budget: opts.BackfillBudget}, nil
 }
 
 // Close closes the database.
@@ -183,20 +192,20 @@ func (s *Store) SetMeta(key, value string) error {
 	return err
 }
 
-// CheckMode records the mode on first run and refuses a later change, because
-// changing a .env file alone must never start a backfill.
-func (s *Store) CheckMode(mode string) error {
-	stored, err := s.Meta("active_mode")
-	if err != nil {
-		return err
+// EnsureMeta stores fresh only if the key is unset, and returns what is stored.
+func (s *Store) EnsureMeta(key, fresh string) (string, error) {
+	if _, err := s.db.Exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`, key, fresh); err != nil {
+		return "", err
 	}
-	if stored == "" {
-		return s.SetMeta("active_mode", mode)
+	return s.Meta(key)
+}
+
+// noRow turns "no such row" into the error every backend returns.
+func noRow(err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.ErrNotFound
 	}
-	if stored != mode {
-		return fmt.Errorf("ENCODE_MODE is %q but this database runs %q: change it with an explicit mode switch", mode, stored)
-	}
-	return nil
+	return err
 }
 
 func (s *Store) tx(fn func(*sql.Tx) error) error {

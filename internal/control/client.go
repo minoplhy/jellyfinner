@@ -384,3 +384,34 @@ func (c *Client) EdgeDownload(ctx context.Context, hash, token string, offset in
 	}
 	return c.transfer.Do(req)
 }
+
+// API is everything a node asks of the control API. Client is the real one;
+// worker, edge agent and transfer code depend on this interface instead.
+type API interface {
+	// WhoAmI returns the node this token belongs to.
+	WhoAmI(ctx context.Context) (*WhoAmIResponse, error)
+	// Claim asks for a job, and returns nil when there is none.
+	Claim(ctx context.Context) (*ClaimResponse, error)
+	// Heartbeat extends a lease, and reports true when the job was cancelled.
+	Heartbeat(ctx context.Context, id string, req HeartbeatRequest) (bool, error)
+	// Finish reports a job's result.
+	Finish(ctx context.Context, id string, req FinishRequest) error
+
+	// SourceSize returns the size of a job's source file.
+	SourceSize(ctx context.Context, id, lease string) (int64, error)
+	// SourceRange streams part of a job's source file.
+	SourceRange(ctx context.Context, id, lease string, offset, length int64) (io.ReadCloser, error)
+	// UploadOffset returns how much of an output file has been received.
+	UploadOffset(ctx context.Context, id, lease, name string) (int64, error)
+	// Upload sends part of an output file, starting at offset.
+	Upload(ctx context.Context, id, lease, name string, offset int64, body io.Reader, size int64) error
+
+	// EdgePoll reports an edge node's state and returns its orders.
+	EdgePoll(ctx context.Context, req EdgePollRequest) (*EdgePollResponse, error)
+	// EdgeAck reports the result of an order.
+	EdgeAck(ctx context.Context, req EdgeAck) error
+	// EdgeDownload fetches an encoded file, from offset.
+	EdgeDownload(ctx context.Context, hash, token string, offset int64) (*http.Response, error)
+}
+
+var _ API = (*Client)(nil)

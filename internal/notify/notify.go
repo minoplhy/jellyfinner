@@ -17,6 +17,8 @@ type Notifier interface {
 	Send(ctx context.Context, message string) error
 }
 
+var _ Notifier = (*Webhooks)(nil)
+
 // Webhooks sends to every configured target. Either URL may be empty.
 type Webhooks struct {
 	DiscordURL string

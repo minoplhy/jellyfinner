@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"jellyfinner/internal/control"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 	"jellyfinner/internal/transfer"
 )
 
@@ -37,8 +37,8 @@ func transferFixture(t *testing.T, nodes []testNode) (*fixture, *control.ClaimRe
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.Enqueue(&queue.Job{
-		ID: "a", Path: "a.mkv", OutputPath: "a.mp4", Priority: queue.PriorityNew,
+	if _, err := f.store.Enqueue(&model.Job{
+		ID: "a", Path: "a.mkv", OutputPath: "a.mp4", Priority: model.PriorityNew,
 		SourceSize: info.Size(), SourceMtime: info.ModTime().UnixNano(),
 	}); err != nil {
 		t.Fatal(err)

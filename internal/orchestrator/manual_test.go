@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 const webhookToken = "fedcba9876543210fedcba9876543210"
@@ -81,7 +81,7 @@ func TestPlayingStubQueuesOnce(t *testing.T) {
 	f.play("a.mp4", "item1", "alice", "s1")
 
 	jobs := f.jobs()
-	if len(jobs) != 1 || jobs[0].State != queue.StateQueued || jobs[0].Priority != queue.PriorityNew {
+	if len(jobs) != 1 || jobs[0].State != model.StateQueued || jobs[0].Priority != model.PriorityNew {
 		t.Fatalf("jobs = %+v", jobs)
 	}
 	if !slices.Contains(f.library.messages, "s1:Queued. You will be notified when it is ready.") {
@@ -210,7 +210,7 @@ func TestChangedSourceKeepsOpenRequest(t *testing.T) {
 
 	f.write("a.mkv", "two two")
 	f.stabilise()
-	if j, _ := f.store.Get(running.ID); j.State != queue.StateCancelled {
+	if j, _ := f.store.Get(running.ID); j.State != model.StateCancelled {
 		t.Errorf("old job = %+v", j)
 	}
 	if f.queued("a.mkv") == nil {
@@ -323,7 +323,7 @@ func TestSwitchAutoToManualCancelsQueuedAndCreatesStubs(t *testing.T) {
 	if err := f.svc.Stub.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	if j, _ := f.store.Get(running.ID); j.State != queue.StateRunning {
+	if j, _ := f.store.Get(running.ID); j.State != model.StateRunning {
 		t.Errorf("the running job finishes normally: %+v", j)
 	}
 	f.scan()

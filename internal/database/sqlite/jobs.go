@@ -1,4 +1,4 @@
-package queue
+package sqlite
 
 import (
 	"crypto/rand"
@@ -8,62 +8,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"jellyfinner/internal/model"
 )
-
-// Job states.
-const (
-	StateQueued     = "queued"
-	StateRunning    = "running"
-	StatePublishing = "publishing"
-	StateDone       = "done"
-	StateFailed     = "failed"
-	StateCancelled  = "cancelled"
-)
-
-// Priorities. New titles always run before the archive.
-const (
-	PriorityBackfill = 0
-	PriorityNew      = 10
-)
-
-// ErrLeaseLost means the caller no longer owns the job.
-var ErrLeaseLost = errors.New("job lease lost")
-
-// ErrNotFound means no job matched.
-var ErrNotFound = errors.New("job not found")
-
-// Job is one row of the queue.
-type Job struct {
-	ID          string  `json:"id"`
-	Path        string  `json:"path"`
-	OutputPath  string  `json:"output_path"`
-	SourceSize  int64   `json:"source_size"`
-	SourceMtime int64   `json:"source_mtime"`
-	Revision    int     `json:"revision"`
-	Profile     string  `json:"profile"`
-	Priority    int     `json:"priority"`
-	State       string  `json:"state"`
-	Attempts    int     `json:"attempts"`
-	LeaseID     string  `json:"-"`
-	Node        string  `json:"node"`
-	Stage       string  `json:"stage"`
-	Fraction    float64 `json:"fraction"`
-	Reason      string  `json:"reason"`
-	ForceEncode bool    `json:"force_encode"`
-	Software    bool    `json:"software"`
-	Error       string  `json:"error"`
-	Log         string  `json:"-"`
-	Manifest    string  `json:"-"`
-	Created     int64   `json:"created"`
-	Updated     int64   `json:"updated"`
-}
 
 const jobColumns = `id, path, output_path, source_size, source_mtime, revision, profile, priority,
 	state, attempts, lease_id, node, stage, fraction, reason, force_encode, software,
 	error, log, manifest, created, updated`
 
-func scanJob(row interface{ Scan(...any) error }) (*Job, error) {
-	var j Job
+func scanJob(row interface{ Scan(...any) error }) (*model.Job, error) {
+	var j model.Job
 	err := row.Scan(&j.ID, &j.Path, &j.OutputPath, &j.SourceSize, &j.SourceMtime, &j.Revision, &j.Profile, &j.Priority,
 		&j.State, &j.Attempts, &j.LeaseID, &j.Node, &j.Stage, &j.Fraction, &j.Reason, &j.ForceEncode, &j.Software,
 		&j.Error, &j.Log, &j.Manifest, &j.Created, &j.Updated)
@@ -75,13 +29,13 @@ func scanJob(row interface{ Scan(...any) error }) (*Job, error) {
 
 // Enqueue inserts a job. It reports false if the ID already exists, whatever
 // its state, so the watcher cannot endlessly requeue a failed encode.
-func (s *Store) Enqueue(j *Job) (bool, error) {
-	now := s.Now().Unix()
+func (s *Store) Enqueue(j *model.Job) (bool, error) {
+	now := s.now().Unix()
 	res, err := s.db.Exec(`INSERT OR IGNORE INTO jobs
 		(id, path, output_path, source_size, source_mtime, revision, profile, priority, state,
 		 reason, force_encode, software, created, updated)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ID, j.Path, j.OutputPath, j.SourceSize, j.SourceMtime, j.Revision, j.Profile, j.Priority, StateQueued,
+		j.ID, j.Path, j.OutputPath, j.SourceSize, j.SourceMtime, j.Revision, j.Profile, j.Priority, model.StateQueued,
 		j.Reason, j.ForceEncode, j.Software, now, now)
 	if err != nil {
 		return false, err
@@ -91,32 +45,21 @@ func (s *Store) Enqueue(j *Job) (bool, error) {
 }
 
 // Get returns one job.
-func (s *Store) Get(id string) (*Job, error) {
+func (s *Store) Get(id string) (*model.Job, error) {
 	j, err := scanJob(s.db.QueryRow(`SELECT `+jobColumns+` FROM jobs WHERE id = ?`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	return j, err
+	return j, noRow(err)
 }
 
 // List returns the most recent jobs, active ones first.
-func (s *Store) List(limit int) ([]*Job, error) {
+func (s *Store) List(limit int) ([]*model.Job, error) {
 	return s.query(`SELECT `+jobColumns+` FROM jobs
 		ORDER BY state IN ('running', 'publishing') DESC, state = 'queued' DESC, priority DESC, created DESC
 		LIMIT ?`, limit)
 }
 
-// JobFilter narrows a job listing. Empty fields match everything. Search
-// matches part of the path, ignoring ASCII case.
-type JobFilter struct {
-	State  string
-	Node   string
-	Search string
-}
-
 // ListFiltered returns one page of matching jobs, ordered as List orders them,
 // and how many match in all.
-func (s *Store) ListFiltered(f JobFilter, limit, offset int) ([]*Job, int, error) {
+func (s *Store) ListFiltered(f model.JobFilter, limit, offset int) ([]*model.Job, int, error) {
 	where := `(? = '' OR state = ?) AND (? = '' OR node = ?) AND (? = '' OR path LIKE ? ESCAPE '\')`
 	like := "%" + likeEscaper.Replace(f.Search) + "%"
 	args := []any{f.State, f.State, f.Node, f.Node, f.Search, like}
@@ -136,7 +79,7 @@ var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 // FailedByNode counts, per node, the jobs that failed for good since a time.
 func (s *Store) FailedByNode(since time.Time) (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT node, COUNT(*) FROM jobs WHERE state = ? AND node != '' AND updated >= ?
-		GROUP BY node`, StateFailed, since.Unix())
+		GROUP BY node`, model.StateFailed, since.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -155,17 +98,17 @@ func (s *Store) FailedByNode(since time.Time) (map[string]int, error) {
 
 // Publishing returns jobs waiting to be published, including any left by a
 // restart.
-func (s *Store) Publishing() ([]*Job, error) {
-	return s.query(`SELECT `+jobColumns+` FROM jobs WHERE state = ? ORDER BY updated`, StatePublishing)
+func (s *Store) Publishing() ([]*model.Job, error) {
+	return s.query(`SELECT `+jobColumns+` FROM jobs WHERE state = ? ORDER BY updated`, model.StatePublishing)
 }
 
-func (s *Store) query(q string, args ...any) ([]*Job, error) {
+func (s *Store) query(q string, args ...any) ([]*model.Job, error) {
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var jobs []*Job
+	var jobs []*model.Job
 	for rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
@@ -177,18 +120,18 @@ func (s *Store) query(q string, args ...any) ([]*Job, error) {
 }
 
 // Claim leases the highest-priority queued job to a node, or returns nil.
-func (s *Store) Claim(node string, leaseFor time.Duration) (*Job, error) {
-	var claimed *Job
+func (s *Store) Claim(node string, leaseFor time.Duration) (*model.Job, error) {
+	var claimed *model.Job
 	err := s.tx(func(tx *sql.Tx) error {
 		j, err := scanJob(tx.QueryRow(`SELECT `+jobColumns+` FROM jobs WHERE state = 'queued' AND not_before <= ?
-			ORDER BY priority DESC, created, rowid LIMIT 1`, s.Now().Unix()))
+			ORDER BY priority DESC, created, rowid LIMIT 1`, s.now().Unix()))
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if j.Priority == PriorityBackfill {
+		if j.Priority == model.PriorityBackfill {
 			ok, err := s.spendBudget(tx, j.SourceSize)
 			if err != nil || !ok {
 				return err
@@ -201,11 +144,11 @@ func (s *Store) Claim(node string, leaseFor time.Duration) (*Job, error) {
 		j.LeaseID = hex.EncodeToString(lease)
 		j.Node = node
 		j.Attempts++
-		j.State = StateRunning
-		now := s.Now()
+		j.State = model.StateRunning
+		now := s.now()
 		_, err = tx.Exec(`UPDATE jobs SET state = ?, lease_id = ?, lease_expires = ?, node = ?,
 			attempts = ?, stage = '', fraction = 0, error = '', updated = ? WHERE id = ?`,
-			StateRunning, j.LeaseID, now.Add(leaseFor).Unix(), node, j.Attempts, now.Unix(), j.ID)
+			model.StateRunning, j.LeaseID, now.Add(leaseFor).Unix(), node, j.Attempts, now.Unix(), j.ID)
 		claimed = j
 		return err
 	})
@@ -220,20 +163,20 @@ func (s *Store) Heartbeat(id, lease, stage string, fraction float64, leaseFor ti
 		var state, current string
 		err := tx.QueryRow(`SELECT state, lease_id FROM jobs WHERE id = ?`, id).Scan(&state, &current)
 		if errors.Is(err, sql.ErrNoRows) || current != lease {
-			return ErrLeaseLost
+			return model.ErrLeaseLost
 		}
 		if err != nil {
 			return err
 		}
 		switch state {
-		case StateCancelled:
+		case model.StateCancelled:
 			cancel = true
 			return nil
-		case StateRunning:
+		case model.StateRunning:
 		default:
-			return ErrLeaseLost
+			return model.ErrLeaseLost
 		}
-		now := s.Now()
+		now := s.now()
 		_, err = tx.Exec(`UPDATE jobs SET lease_expires = ?, stage = ?, fraction = ?, updated = ? WHERE id = ?`,
 			now.Add(leaseFor).Unix(), stage, fraction, now.Unix(), id)
 		return err
@@ -246,7 +189,7 @@ func (s *Store) Heartbeat(id, lease, stage string, fraction float64, leaseFor ti
 func (s *Store) Complete(id, lease, manifest, log string) error {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, manifest = ?, log = ?, stage = 'publish', fraction = 1,
 		lease_id = '', updated = ? WHERE id = ? AND lease_id = ? AND lease_id != '' AND state = ?`,
-		StatePublishing, manifest, log, s.Now().Unix(), id, lease, StateRunning)
+		model.StatePublishing, manifest, log, s.now().Unix(), id, lease, model.StateRunning)
 	return leaseResult(res, err)
 }
 
@@ -259,7 +202,7 @@ func leaseResult(res sql.Result, err error) error {
 		return err
 	}
 	if n == 0 {
-		return ErrLeaseLost
+		return model.ErrLeaseLost
 	}
 	return nil
 }
@@ -269,7 +212,7 @@ func leaseResult(res sql.Result, err error) error {
 func (s *Store) Release(id, lease string) error {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, attempts = attempts - 1, lease_id = '', stage = '', fraction = 0,
 		updated = ? WHERE id = ? AND lease_id = ? AND lease_id != '' AND state = ?`,
-		StateQueued, s.Now().Unix(), id, lease, StateRunning)
+		model.StateQueued, s.now().Unix(), id, lease, model.StateRunning)
 	return leaseResult(res, err)
 }
 
@@ -282,48 +225,48 @@ func (s *Store) Fail(id, lease, reason, log string, maxAttempts int) (bool, erro
 		var attempts int
 		err := tx.QueryRow(`SELECT state, lease_id, attempts FROM jobs WHERE id = ?`, id).Scan(&state, &current, &attempts)
 		if errors.Is(err, sql.ErrNoRows) || current != lease || lease == "" {
-			return ErrLeaseLost
+			return model.ErrLeaseLost
 		}
 		if err != nil {
 			return err
 		}
-		if state == StateCancelled {
-			_, err := tx.Exec(`UPDATE jobs SET log = ?, lease_id = '', updated = ? WHERE id = ?`, log, s.Now().Unix(), id)
+		if state == model.StateCancelled {
+			_, err := tx.Exec(`UPDATE jobs SET log = ?, lease_id = '', updated = ? WHERE id = ?`, log, s.now().Unix(), id)
 			return err
 		}
-		if state != StateRunning {
-			return ErrLeaseLost
+		if state != model.StateRunning {
+			return model.ErrLeaseLost
 		}
 		final = attempts >= maxAttempts
 		_, err = tx.Exec(`UPDATE jobs SET state = ?, error = ?, log = ?, lease_id = '', not_before = ?, updated = ? WHERE id = ?`,
-			nextState(final), reason, log, s.retryAt(attempts), s.Now().Unix(), id)
+			nextState(final), reason, log, s.retryAt(attempts), s.now().Unix(), id)
 		return err
 	})
 	return final, err
 }
 
 func (s *Store) retryAt(attempts int) int64 {
-	return s.Now().Add(time.Duration(attempts) * s.RetryDelay).Unix()
+	return s.now().Add(time.Duration(attempts) * s.retryDelay).Unix()
 }
 
 func nextState(final bool) string {
 	if final {
-		return StateFailed
+		return model.StateFailed
 	}
-	return StateQueued
+	return model.StateQueued
 }
 
 // ExpireLeases requeues running jobs whose worker went silent, and returns
 // those that have now failed for good.
-func (s *Store) ExpireLeases(maxAttempts int) ([]*Job, error) {
-	var failed []*Job
+func (s *Store) ExpireLeases(maxAttempts int) ([]*model.Job, error) {
+	var failed []*model.Job
 	err := s.tx(func(tx *sql.Tx) error {
-		now := s.Now().Unix()
-		rows, err := tx.Query(`SELECT `+jobColumns+` FROM jobs WHERE state = ? AND lease_expires < ?`, StateRunning, now)
+		now := s.now().Unix()
+		rows, err := tx.Query(`SELECT `+jobColumns+` FROM jobs WHERE state = ? AND lease_expires < ?`, model.StateRunning, now)
 		if err != nil {
 			return err
 		}
-		var expired []*Job
+		var expired []*model.Job
 		for rows.Next() {
 			j, err := scanJob(rows)
 			if err != nil {
@@ -355,7 +298,7 @@ func (s *Store) ExpireLeases(maxAttempts int) ([]*Job, error) {
 // MarkDone records a successful publish.
 func (s *Store) MarkDone(id string) error {
 	_, err := s.db.Exec(`UPDATE jobs SET state = ?, stage = 'done', error = '', updated = ? WHERE id = ?`,
-		StateDone, s.Now().Unix(), id)
+		model.StateDone, s.now().Unix(), id)
 	return err
 }
 
@@ -368,7 +311,7 @@ func (s *Store) PublishFailed(id, reason string, maxAttempts int) (bool, error) 
 	}
 	final := j.Attempts >= maxAttempts
 	_, err = s.db.Exec(`UPDATE jobs SET state = ?, error = ?, not_before = ?, updated = ? WHERE id = ?`,
-		nextState(final), reason, s.retryAt(j.Attempts), s.Now().Unix(), id)
+		nextState(final), reason, s.retryAt(j.Attempts), s.now().Unix(), id)
 	return final, err
 }
 
@@ -376,7 +319,7 @@ func (s *Store) PublishFailed(id, reason string, maxAttempts int) (bool, error) 
 // next heartbeat.
 func (s *Store) Cancel(id string) error {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, updated = ? WHERE id = ? AND state IN ('queued', 'running')`,
-		StateCancelled, s.Now().Unix(), id)
+		model.StateCancelled, s.now().Unix(), id)
 	if err != nil {
 		return err
 	}
@@ -388,7 +331,7 @@ func (s *Store) Cancel(id string) error {
 func (s *Store) CancelForPath(path, keep string) (int64, error) {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, updated = ?
 		WHERE path = ? AND id != ? AND state IN ('queued', 'running', 'publishing')`,
-		StateCancelled, s.Now().Unix(), path, keep)
+		model.StateCancelled, s.now().Unix(), path, keep)
 	if err != nil {
 		return 0, err
 	}
@@ -398,7 +341,7 @@ func (s *Store) CancelForPath(path, keep string) (int64, error) {
 // Bump raises a queued job to the new-title priority.
 func (s *Store) Bump(id string) error {
 	res, err := s.db.Exec(`UPDATE jobs SET priority = ?, updated = ? WHERE id = ? AND state = 'queued'`,
-		PriorityNew, s.Now().Unix(), id)
+		model.PriorityNew, s.now().Unix(), id)
 	if err != nil {
 		return err
 	}
@@ -409,7 +352,7 @@ func (s *Store) Bump(id string) error {
 func (s *Store) Retry(id string) error {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, attempts = 0, error = '', lease_id = '', not_before = 0, updated = ?
 		WHERE id = ? AND state IN ('failed', 'cancelled')`,
-		StateQueued, s.Now().Unix(), id)
+		model.StateQueued, s.now().Unix(), id)
 	if err != nil {
 		return err
 	}

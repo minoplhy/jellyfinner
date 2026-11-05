@@ -17,8 +17,11 @@ import (
 
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/control"
+	"jellyfinner/internal/database"
+	"jellyfinner/internal/database/dbtest"
 	"jellyfinner/internal/job"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
+	"jellyfinner/internal/nodes"
 )
 
 const token = "0123456789abcdef0123456789abcdef"
@@ -31,48 +34,48 @@ type testNode struct {
 }
 
 type fixture struct {
-	store     *queue.Store
+	store     database.Store
+	reg       *nodes.Registry
+	srv       *Server
 	cfg       *config.Config
 	server    *httptest.Server
 	client    *control.Client
 	completed int
-	failed    []*queue.Job
+	failed    []*model.Job
 	nodes     []testNode
 
 	edgeFailed []string
 }
 
-func newFixture(t *testing.T, nodes []testNode) *fixture {
+func newFixture(t *testing.T, testNodes []testNode) *fixture {
 	t.Helper()
-	store, err := queue.Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	store.RetryDelay = 0
+	store := dbtest.Open(t, database.Options{})
+	reg := nodes.New(store, nil)
 
-	for _, n := range nodes {
-		node := &queue.Node{Name: n.Name, Kind: queue.NodeWorker, TokenHash: queue.HashToken(n.Token), Allow: n.Allow}
+	for _, n := range testNodes {
+		node := &model.Node{Name: n.Name, Kind: model.NodeWorker, TokenHash: nodes.HashToken(n.Token), Allow: n.Allow}
 		if n.Edge {
-			node.Kind = queue.NodeEdge
+			node.Kind = model.NodeEdge
 		}
-		if err := store.AddNode(node); err != nil {
+		if err := reg.Add(node); err != nil {
 			t.Fatal(err)
 		}
 	}
 	cfg := &config.Config{LeaseFor: time.Minute, MaxAttempts: 2}
-	f := &fixture{store: store, nodes: nodes, cfg: cfg}
-	srv := New(cfg, store, Hooks{
-		WorkerJob: func(j *queue.Job) *job.Job {
+	f := &fixture{store: store, reg: reg, nodes: testNodes, cfg: cfg}
+	srv := New(cfg, store, reg, Hooks{
+		WorkerJob: func(j *model.Job) *job.Job {
 			return &job.Job{ID: j.ID, Source: "origin:/" + j.Path, Incoming: "origin:/incoming", OutputPath: j.OutputPath}
 		},
 		Completed: func() { f.completed++ },
-		Failed:    func(j *queue.Job) { f.failed = append(f.failed, j) },
+		Failed:    func(j *model.Job) { f.failed = append(f.failed, j) },
 		EdgeFailed: func(node, sha256, reason string) {
 			f.edgeFailed = append(f.edgeFailed, node+":"+reason)
 		},
 	}, log.New(io.Discard, "", 0))
+	f.srv = srv
 	f.server = httptest.NewServer(srv.Handler())
+	var err error
 	t.Cleanup(f.server.Close)
 	if f.client, err = control.NewClient(f.server.URL, token); err != nil {
 		t.Fatal(err)
@@ -82,7 +85,7 @@ func newFixture(t *testing.T, nodes []testNode) *fixture {
 
 func (f *fixture) enqueue(t *testing.T, id string) {
 	t.Helper()
-	if _, err := f.store.Enqueue(&queue.Job{ID: id, Path: id + ".mkv", OutputPath: id + ".mp4", Priority: queue.PriorityNew}); err != nil {
+	if _, err := f.store.Enqueue(&model.Job{ID: id, Path: id + ".mkv", OutputPath: id + ".mp4", Priority: model.PriorityNew}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -113,7 +116,7 @@ func TestClaimHeartbeatFinish(t *testing.T) {
 		t.Fatal(err)
 	}
 	j, _ := f.store.Get("a")
-	if j.State != queue.StatePublishing || j.Log != "ok" || f.completed != 1 {
+	if j.State != model.StatePublishing || j.Log != "ok" || f.completed != 1 {
 		t.Errorf("job = %+v, completed = %d", j, f.completed)
 	}
 }
@@ -242,7 +245,7 @@ func TestFailedAuthIsRateLimited(t *testing.T) {
 	if got := post(t, f.server.URL, "Bearer "+token); got != http.StatusTooManyRequests {
 		t.Errorf("after too many failures: %d", got)
 	}
-	f.store.Now = func() time.Time { return time.Now().Add(2 * authWindow) }
+	f.srv.Now = func() time.Time { return time.Now().Add(2 * authWindow) }
 	if got := post(t, f.server.URL, "Bearer "+token); got != http.StatusNoContent {
 		t.Errorf("after the window: %d", got)
 	}
@@ -302,11 +305,11 @@ func TestRolesAreSeparate(t *testing.T) {
 func TestEdgeOrdersAndAcks(t *testing.T) {
 	f, c, hash := edgeFixture(t)
 	ctx := context.Background()
-	if err := f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
+	if err := f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
 		t.Fatal(err)
 	}
 	other := strings.Repeat("b", 64)
-	if err := f.store.AddPlacement(&queue.Placement{Node: "edge2", SHA256: other, Output: "b.mp4", Size: 1}); err != nil {
+	if err := f.store.AddPlacement(&model.Placement{Node: "edge2", SHA256: other, Output: "b.mp4", Size: 1}); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := c.EdgePoll(ctx, control.EdgePollRequest{DiskFree: 5, DiskTotal: 9})
@@ -367,14 +370,14 @@ func TestEdgeOrdersAndAcks(t *testing.T) {
 func TestExpiredDownloadTokenRefused(t *testing.T) {
 	f, c, hash := edgeFixture(t)
 	ctx := context.Background()
-	if err := f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
+	if err := f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := c.EdgePoll(ctx, control.EdgePollRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.store.Now = func() time.Time { return time.Now().Add(2 * downloadTokenLife) }
+	f.srv.Now = func() time.Time { return time.Now().Add(2 * downloadTokenLife) }
 	dl, err := c.EdgeDownload(ctx, hash, resp.Orders[0].Token, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -388,7 +391,7 @@ func TestExpiredDownloadTokenRefused(t *testing.T) {
 func TestMissingFileFailsPlacementAndOrphanIsCleaned(t *testing.T) {
 	f, c, hash := edgeFixture(t)
 	ctx := context.Background()
-	if err := f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
+	if err := f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.store.ActivatePlacement("edge1", hash); err != nil {
@@ -450,7 +453,7 @@ func TestWhoAmI(t *testing.T) {
 	edgeToken := strings.Repeat("e", 32)
 	f := newFixture(t, []testNode{{Name: "worker1", Token: token}, {Name: "edge1", Token: edgeToken, Edge: true}})
 	me, err := f.client.WhoAmI(context.Background())
-	if err != nil || me.Name != "worker1" || me.Kind != queue.NodeWorker {
+	if err != nil || me.Name != "worker1" || me.Kind != model.NodeWorker {
 		t.Errorf("worker: %+v, %v", me, err)
 	}
 	f.enqueue(t, "a")
@@ -458,7 +461,7 @@ func TestWhoAmI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if me, err = edge.WhoAmI(context.Background()); err != nil || me.Name != "edge1" || me.Kind != queue.NodeEdge {
+	if me, err = edge.WhoAmI(context.Background()); err != nil || me.Name != "edge1" || me.Kind != model.NodeEdge {
 		t.Errorf("edge: %+v, %v", me, err)
 	}
 	wrong, err := control.NewClient(f.server.URL, strings.Repeat("x", 32))
@@ -478,7 +481,7 @@ func TestRemovedNodeIsRefused(t *testing.T) {
 	if got := post(t, f.server.URL, "Bearer "+token); got != http.StatusNoContent {
 		t.Fatalf("before removal: %d", got)
 	}
-	if err := f.store.RemoveNode("worker1"); err != nil {
+	if err := f.reg.Remove("worker1"); err != nil {
 		t.Fatal(err)
 	}
 	if got := post(t, f.server.URL, "Bearer "+token); got != http.StatusUnauthorized {
@@ -501,7 +504,7 @@ func TestReleaseGivesTheAttemptBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.State != queue.StateQueued || j.Attempts != 0 || j.LeaseID != "" {
+	if j.State != model.StateQueued || j.Attempts != 0 || j.LeaseID != "" {
 		t.Errorf("job = %+v", j)
 	}
 	if err := f.client.Finish(ctx, "a", control.FinishRequest{Lease: claim.Lease, Released: true}); !errors.Is(err, control.ErrLeaseLost) {
@@ -512,17 +515,17 @@ func TestReleaseGivesTheAttemptBack(t *testing.T) {
 func TestFailedPullDoesNotUndoAWithdrawal(t *testing.T) {
 	f, edgeClient, hash := edgeFixture(t)
 	ctx := context.Background()
-	if err := f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
+	if err := f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.SetPlacementState("edge1", hash, queue.PlacementDeleting, ""); err != nil {
+	if err := f.store.SetPlacementState("edge1", hash, model.PlacementDeleting, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := edgeClient.EdgeAck(ctx, control.EdgeAck{Verb: control.VerbPull, SHA256: hash, Error: "disk full"}); err != nil {
 		t.Fatal(err)
 	}
 	ps, err := f.store.NodePlacements("edge1")
-	if err != nil || len(ps) != 1 || ps[0].State != queue.PlacementDeleting {
+	if err != nil || len(ps) != 1 || ps[0].State != model.PlacementDeleting {
 		t.Errorf("placements = %+v, %v", ps, err)
 	}
 	if len(f.edgeFailed) != 0 {
@@ -532,7 +535,7 @@ func TestFailedPullDoesNotUndoAWithdrawal(t *testing.T) {
 
 func TestFailedPullIsReported(t *testing.T) {
 	f, edgeClient, hash := edgeFixture(t)
-	if err := f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
+	if err := f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "a.mp4", Size: 11}); err != nil {
 		t.Fatal(err)
 	}
 	if err := edgeClient.EdgeAck(context.Background(), control.EdgeAck{Verb: control.VerbPull, SHA256: hash, Error: "disk full"}); err != nil {
@@ -546,7 +549,7 @@ func TestFailedPullIsReported(t *testing.T) {
 func TestControlURLWithPath(t *testing.T) {
 	f := newFixture(t, allNodes())
 	f.cfg.ControlURL = "https://control.example.com/jf"
-	srv := httptest.NewServer(New(f.cfg, f.store, Hooks{}, log.New(io.Discard, "", 0)).Handler())
+	srv := httptest.NewServer(New(f.cfg, f.store, f.reg, Hooks{}, log.New(io.Discard, "", 0)).Handler())
 	t.Cleanup(srv.Close)
 	// Behind a proxy that keeps the prefix, and behind one that strips it.
 	for _, base := range []string{srv.URL + "/jf", srv.URL} {

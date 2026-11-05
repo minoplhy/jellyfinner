@@ -16,8 +16,11 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
+	"jellyfinner/internal/database"
+	"jellyfinner/internal/database/dbtest"
+	"jellyfinner/internal/jellyfin/jellyfintest"
+	"jellyfinner/internal/model"
 	"jellyfinner/internal/pipeline"
-	"jellyfinner/internal/queue"
 )
 
 type fakeNotifier struct {
@@ -44,6 +47,7 @@ func (f *fakeNotifier) has(sub string) bool {
 }
 
 type fakeLibrary struct {
+	jellyfintest.Unimplemented
 	mu       sync.Mutex
 	calls    int
 	paths    map[string]string
@@ -91,7 +95,7 @@ func (f *fakeLibrary) count() int {
 type fixture struct {
 	t       *testing.T
 	svc     *Service
-	store   *queue.Store
+	store   database.Store
 	cfg     *config.Config
 	notify  *fakeNotifier
 	library *fakeLibrary
@@ -121,17 +125,25 @@ func newFixture(t *testing.T) *fixture {
 			t.Fatal(err)
 		}
 	}
-	store, err := queue.Open(filepath.Join(root, "state.db"))
-	if err != nil {
+	f := &fixture{t: t, cfg: cfg, notify: &fakeNotifier{}, library: &fakeLibrary{paths: map[string]string{}}, now: time.Unix(2000000, 0)}
+	clock := func() time.Time { return f.now }
+	f.store = dbtest.Open(t, database.Options{Now: clock})
+	f.svc = New(cfg, f.store, f.notify, f.library, log.New(io.Discard, "", 0))
+	f.svc.Now = clock
+	return f
+}
+
+func TestCheckMode(t *testing.T) {
+	s := dbtest.Open(t, database.Options{})
+	if err := CheckMode(s, "auto"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.Close() })
-	store.RetryDelay = 0
-
-	f := &fixture{t: t, store: store, cfg: cfg, notify: &fakeNotifier{}, library: &fakeLibrary{paths: map[string]string{}}, now: time.Unix(2000000, 0)}
-	store.Now = func() time.Time { return f.now }
-	f.svc = New(cfg, store, f.notify, f.library, log.New(io.Discard, "", 0))
-	return f
+	if err := CheckMode(s, "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckMode(s, "manual"); err == nil || !strings.Contains(err.Error(), "mode switch") {
+		t.Errorf("a changed mode must be refused: %v", err)
+	}
 }
 
 func (f *fixture) advance(d time.Duration) { f.now = f.now.Add(d) }
@@ -170,7 +182,7 @@ func (f *fixture) stabilise() {
 	f.scan()
 }
 
-func (f *fixture) jobs() []*queue.Job {
+func (f *fixture) jobs() []*model.Job {
 	f.t.Helper()
 	jobs, err := f.store.List(100)
 	if err != nil {
@@ -179,10 +191,10 @@ func (f *fixture) jobs() []*queue.Job {
 	return jobs
 }
 
-func (f *fixture) queued(path string) *queue.Job {
+func (f *fixture) queued(path string) *model.Job {
 	f.t.Helper()
 	for _, j := range f.jobs() {
-		if j.Path == path && j.State == queue.StateQueued {
+		if j.Path == path && j.State == model.StateQueued {
 			return j
 		}
 	}
@@ -190,7 +202,7 @@ func (f *fixture) queued(path string) *queue.Job {
 }
 
 // upload simulates a worker pushing a finished job.
-func (f *fixture) upload(j *queue.Job, files map[string]string) string {
+func (f *fixture) upload(j *model.Job, files map[string]string) string {
 	f.t.Helper()
 	dir := filepath.Join(f.cfg.IncomingDir, j.ID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -214,7 +226,7 @@ func (f *fixture) upload(j *queue.Job, files map[string]string) string {
 	return dir
 }
 
-func (f *fixture) claim() *queue.Job {
+func (f *fixture) claim() *model.Job {
 	f.t.Helper()
 	j, err := f.store.Claim("worker1", time.Minute)
 	if err != nil {
@@ -226,7 +238,7 @@ func (f *fixture) claim() *queue.Job {
 	return j
 }
 
-func (f *fixture) complete(j *queue.Job) {
+func (f *fixture) complete(j *model.Job) {
 	f.t.Helper()
 	if err := f.store.Complete(j.ID, j.LeaseID, "{}", ""); err != nil {
 		f.t.Fatal(err)
@@ -290,7 +302,7 @@ func TestNewFileWaitsUntilStable(t *testing.T) {
 	if j == nil {
 		t.Fatal("not queued once stable")
 	}
-	if j.OutputPath != "Movies/N/N.mp4" || j.Priority != queue.PriorityNew {
+	if j.OutputPath != "Movies/N/N.mp4" || j.Priority != model.PriorityNew {
 		t.Errorf("job = %+v", j)
 	}
 	if got := f.svc.WorkerJob(j); got.Source != "origin:/originals/Movies/N/N.mkv" || got.Incoming != "origin:/incoming" {
@@ -312,7 +324,7 @@ func TestFileChangedMidJobCancelsAndRequeues(t *testing.T) {
 
 	f.write("a.mkv", "two two")
 	f.scan()
-	if j, _ := f.store.Get(running.ID); j.State != queue.StateCancelled {
+	if j, _ := f.store.Get(running.ID); j.State != model.StateCancelled {
 		t.Errorf("state = %s", j.State)
 	}
 	f.stabilise()
@@ -365,7 +377,7 @@ func TestPublishMovesFilesIntoLibrary(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o644 {
 		t.Errorf("Jellyfin must be able to read it: %v, %v", info.Mode(), err)
 	}
-	if got, _ := f.store.Get(j.ID); got.State != queue.StateDone {
+	if got, _ := f.store.Get(j.ID); got.State != model.StateDone {
 		t.Errorf("state = %s", got.State)
 	}
 	if !f.notify.has("Ready to watch: A") {
@@ -406,30 +418,30 @@ func TestLibraryRefreshIsDebounced(t *testing.T) {
 func TestPublishRejectsBadUploads(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(f *fixture, j *queue.Job, dir string)
+		mutate func(f *fixture, j *model.Job, dir string)
 	}{
-		{"corrupt video", func(f *fixture, _ *queue.Job, dir string) {
+		{"corrupt video", func(f *fixture, _ *model.Job, dir string) {
 			if err := os.WriteFile(filepath.Join(dir, "A.mp4"), []byte("VIDEO"), 0o640); err != nil {
 				f.t.Fatal(err)
 			}
 		}},
-		{"truncated video", func(f *fixture, _ *queue.Job, dir string) {
+		{"truncated video", func(f *fixture, _ *model.Job, dir string) {
 			if err := os.WriteFile(filepath.Join(dir, "A.mp4"), []byte("vid"), 0o640); err != nil {
 				f.t.Fatal(err)
 			}
 		}},
-		{"missing manifest", func(f *fixture, _ *queue.Job, dir string) {
+		{"missing manifest", func(f *fixture, _ *model.Job, dir string) {
 			if err := os.Remove(filepath.Join(dir, pipeline.ManifestName)); err != nil {
 				f.t.Fatal(err)
 			}
 		}},
-		{"manifest for another job", func(f *fixture, _ *queue.Job, dir string) {
+		{"manifest for another job", func(f *fixture, _ *model.Job, dir string) {
 			rewriteManifest(f, dir, func(m *pipeline.Manifest) { m.JobID = "other" })
 		}},
-		{"path traversal", func(f *fixture, _ *queue.Job, dir string) {
+		{"path traversal", func(f *fixture, _ *model.Job, dir string) {
 			rewriteManifest(f, dir, func(m *pipeline.Manifest) { m.Files[0].Name = "../../evil.mp4" })
 		}},
-		{"video not listed", func(f *fixture, _ *queue.Job, dir string) {
+		{"video not listed", func(f *fixture, _ *model.Job, dir string) {
 			rewriteManifest(f, dir, func(m *pipeline.Manifest) { m.Files = nil })
 		}},
 	}
@@ -449,7 +461,7 @@ func TestPublishRejectsBadUploads(t *testing.T) {
 				t.Error("a bad upload reached the library")
 			}
 			got, _ := f.store.Get(j.ID)
-			if got.State != queue.StateQueued || !strings.Contains(got.Error, "publish") {
+			if got.State != model.StateQueued || !strings.Contains(got.Error, "publish") {
 				t.Errorf("job = %+v", got)
 			}
 			if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -576,7 +588,7 @@ func TestReencodeRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.Reason != "audio" || !j.ForceEncode || !j.Software || j.Priority != queue.PriorityNew || j.Revision != 1 {
+	if j.Reason != "audio" || !j.ForceEncode || !j.Software || j.Priority != model.PriorityNew || j.Revision != 1 {
 		t.Errorf("job = %+v", j)
 	}
 	if got, _ := f.inLibrary("a.mp4"); got != "v1" {
@@ -917,7 +929,7 @@ func TestReapClearsAbandonedUploads(t *testing.T) {
 	if err := f.store.Cancel(cancelled.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, j := range []*queue.Job{cancelled, running} {
+	for _, j := range []*model.Job{cancelled, running} {
 		if err := os.MkdirAll(filepath.Join(f.cfg.IncomingDir, j.ID), 0o750); err != nil {
 			t.Fatal(err)
 		}

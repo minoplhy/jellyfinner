@@ -1,37 +1,17 @@
-package queue
+package sqlite
 
 import (
 	"database/sql"
 	"errors"
+
+	"jellyfinner/internal/model"
 )
-
-// Source is one file tracked under the originals directory. The Encoded fields
-// record the version that was last published.
-type Source struct {
-	Path           string
-	Size           int64
-	MtimeNS        int64
-	LastChanged    int64
-	Backlog        bool
-	Revision       int
-	EncodedSize    int64
-	EncodedMtimeNS int64
-	EncodedProfile string
-	EncodedSHA256  string
-	EncodedBytes   int64
-	MissingSince   int64
-}
-
-// Encoded reports whether the current version has been published.
-func (s *Source) Encoded() bool {
-	return s.EncodedSize == s.Size && s.EncodedMtimeNS == s.MtimeNS
-}
 
 const sourceColumns = `path, size, mtime_ns, last_changed, backlog, revision,
 	encoded_size, encoded_mtime_ns, encoded_profile, encoded_sha256, encoded_bytes, missing_since`
 
-func scanSource(row interface{ Scan(...any) error }) (*Source, error) {
-	var s Source
+func scanSource(row interface{ Scan(...any) error }) (*model.Source, error) {
+	var s model.Source
 	err := row.Scan(&s.Path, &s.Size, &s.MtimeNS, &s.LastChanged, &s.Backlog, &s.Revision,
 		&s.EncodedSize, &s.EncodedMtimeNS, &s.EncodedProfile, &s.EncodedSHA256, &s.EncodedBytes, &s.MissingSince)
 	if err != nil {
@@ -41,13 +21,13 @@ func scanSource(row interface{ Scan(...any) error }) (*Source, error) {
 }
 
 // Sources returns every tracked source, ordered by path.
-func (s *Store) Sources() ([]*Source, error) {
+func (s *Store) Sources() ([]*model.Source, error) {
 	rows, err := s.db.Query(`SELECT ` + sourceColumns + ` FROM sources ORDER BY path`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*Source
+	var out []*model.Source
 	for rows.Next() {
 		src, err := scanSource(rows)
 		if err != nil {
@@ -59,18 +39,15 @@ func (s *Store) Sources() ([]*Source, error) {
 }
 
 // Source returns one tracked source.
-func (s *Store) Source(path string) (*Source, error) {
+func (s *Store) Source(path string) (*model.Source, error) {
 	src, err := scanSource(s.db.QueryRow(`SELECT `+sourceColumns+` FROM sources WHERE path = ?`, path))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	return src, err
+	return src, noRow(err)
 }
 
 // AddSource starts tracking a file.
 func (s *Store) AddSource(path string, size, mtimeNS int64, backlog bool) error {
 	_, err := s.db.Exec(`INSERT INTO sources (path, size, mtime_ns, last_changed, backlog) VALUES (?, ?, ?, ?, ?)`,
-		path, size, mtimeNS, s.Now().Unix(), backlog)
+		path, size, mtimeNS, s.now().Unix(), backlog)
 	return err
 }
 
@@ -78,7 +55,7 @@ func (s *Store) AddSource(path string, size, mtimeNS int64, backlog bool) error 
 // replaced file counts as new work, so it leaves the backlog.
 func (s *Store) UpdateSource(path string, size, mtimeNS int64) error {
 	_, err := s.db.Exec(`UPDATE sources SET size = ?, mtime_ns = ?, last_changed = ?, backlog = 0, missing_since = 0
-		WHERE path = ?`, size, mtimeNS, s.Now().Unix(), path)
+		WHERE path = ?`, size, mtimeNS, s.now().Unix(), path)
 	return err
 }
 
@@ -123,7 +100,7 @@ func (s *Store) BumpRevision(path string) (int, error) {
 	var revision int
 	err := s.db.QueryRow(`UPDATE sources SET revision = revision + 1 WHERE path = ? RETURNING revision`, path).Scan(&revision)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrNotFound
+		return 0, model.ErrNotFound
 	}
 	return revision, err
 }

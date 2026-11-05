@@ -16,13 +16,17 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
+	"jellyfinner/internal/database"
+	"jellyfinner/internal/database/dbtest"
 	"jellyfinner/internal/jellyfin"
+	"jellyfinner/internal/jellyfin/jellyfintest"
+	"jellyfinner/internal/model"
 	"jellyfinner/internal/notify"
 	"jellyfinner/internal/orchestrator"
-	"jellyfinner/internal/queue"
 )
 
 type fakeAuth struct {
+	jellyfintest.Unimplemented
 	ended []string
 	calls int
 }
@@ -46,7 +50,7 @@ func (f *fakeAuth) EndSession(_ context.Context, token string) error {
 type fixture struct {
 	t      *testing.T
 	svc    *orchestrator.Service
-	store  *queue.Store
+	store  database.Store
 	cfg    *config.Config
 	auth   *fakeAuth
 	server *httptest.Server
@@ -74,19 +78,16 @@ func newFixtureAt(t *testing.T, base string) *fixture {
 			t.Fatal(err)
 		}
 	}
-	store, err := queue.Open(filepath.Join(root, "s.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	store.RetryDelay = 0
-	if err := store.AddNode(&queue.Node{Name: "worker1", Kind: queue.NodeWorker, TokenHash: "x"}); err != nil {
-		t.Fatal(err)
-	}
-	f := &fixture{t: t, store: store, cfg: cfg, auth: &fakeAuth{}, now: time.Unix(2000000, 0)}
-	store.Now = func() time.Time { return f.now }
+	f := &fixture{t: t, cfg: cfg, auth: &fakeAuth{}, now: time.Unix(2000000, 0)}
+	clock := func() time.Time { return f.now }
+	store := dbtest.Open(t, database.Options{Now: clock})
+	f.store = store
 	logger := log.New(io.Discard, "", 0)
 	f.svc = orchestrator.New(cfg, store, notify.New("", ""), nil, logger)
+	f.svc.Now = clock
+	if err := f.svc.Nodes.Add(&model.Node{Name: "worker1", Kind: model.NodeWorker, TokenHash: "x"}); err != nil {
+		t.Fatal(err)
+	}
 	seen := func() map[string]time.Time { return map[string]time.Time{"worker1": f.now} }
 	f.server = httptest.NewServer(New(f.svc, f.auth, seen, logger).Handler())
 	t.Cleanup(f.server.Close)
@@ -351,7 +352,7 @@ func TestLibraryAddAndQueueActions(t *testing.T) {
 	if got, _ := f.post(c, "/jobs/"+id+"/cancel", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
 		t.Errorf("cancel = %d", got)
 	}
-	if j, _ := f.store.Get(id); j.State != queue.StateCancelled {
+	if j, _ := f.store.Get(id); j.State != model.StateCancelled {
 		t.Errorf("state = %s", j.State)
 	}
 	if got, _ := f.post(c, "/jobs/"+id+"/retry", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
@@ -451,7 +452,7 @@ func TestDashboardShowsNodeAndBackfill(t *testing.T) {
 
 func TestNodesPageAndCacheAction(t *testing.T) {
 	f := newFixture(t)
-	if err := f.store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: 1000}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: 1000}); err != nil {
 		t.Fatal(err)
 	}
 	f.add("a.mkv")
@@ -482,7 +483,7 @@ func TestNodesPageAndCacheAction(t *testing.T) {
 	if got, _ := f.post(c, "/nodes/edge1/remove", remove); got != http.StatusSeeOther {
 		t.Errorf("remove = %d", got)
 	}
-	if ps, _ := f.store.NodePlacements("edge1"); ps[0].State != queue.PlacementDeleting {
+	if ps, _ := f.store.NodePlacements("edge1"); ps[0].State != model.PlacementDeleting {
 		t.Errorf("state = %s", ps[0].State)
 	}
 }
@@ -492,12 +493,12 @@ func TestNodesPageAndCacheAction(t *testing.T) {
 func TestNodeStatesAgreeAcrossPages(t *testing.T) {
 	f := newFixture(t)
 	for _, name := range []string{"edge1", "edge2", "edge3"} {
-		if err := f.store.AddNode(&queue.Node{Name: name, Kind: queue.NodeEdge, TokenHash: "x" + name, URL: "https://" + name + ".example.com", QuotaBytes: 1000}); err != nil {
+		if err := f.svc.Nodes.Add(&model.Node{Name: name, Kind: model.NodeEdge, TokenHash: "x" + name, URL: "https://" + name + ".example.com", QuotaBytes: 1000}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// worker2 has made no call since the orchestrator started.
-	if err := f.store.AddNode(&queue.Node{Name: "worker2", Kind: queue.NodeWorker, TokenHash: "xw2"}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{Name: "worker2", Kind: model.NodeWorker, TokenHash: "xw2"}); err != nil {
 		t.Fatal(err)
 	}
 	// edge1 reports and passes its probe, edge2 reports but fails it, and

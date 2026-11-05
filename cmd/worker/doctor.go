@@ -5,9 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"jellyfinner/internal/control"
@@ -30,8 +28,8 @@ func runDoctor(args []string) error {
 	r := doctor.New(os.Stdout)
 	r.Check("scratch writable at "+*set.scratch, doctor.Writable(*set.scratch))
 	r.Check("free space", doctor.FreeSpace(*set.scratch, minFreeGB))
-	r.Check("ffmpeg", exec.CommandContext(ctx, *set.ffmpeg, "-version").Run())
-	r.Check("ffprobe", exec.CommandContext(ctx, *set.ffprobe, "-version").Run())
+	r.Check("ffmpeg", encode.CheckBinary(ctx, *set.ffmpeg))
+	r.Check("ffprobe", encode.CheckBinary(ctx, *set.ffprobe))
 	if encode.Backend(*set.backend) == encode.BackendVAAPI {
 		device := *set.device
 		if device == "" {
@@ -42,8 +40,8 @@ func runDoctor(args []string) error {
 	}
 	if encode.Backend(*set.backend) == encode.BackendRKMPP {
 		r.Check("Rockchip devices in /dev", checkRKMPPDevices("/dev"))
-		r.Check("ffmpeg has h264_rkmpp", hasEncoder(ctx, *set.ffmpeg, "h264_rkmpp"))
-		r.Check("test encode with h264_rkmpp", testEncode(ctx, *set.ffmpeg, "h264_rkmpp"))
+		r.Check("ffmpeg has h264_rkmpp", encode.HasEncoder(ctx, *set.ffmpeg, "h264_rkmpp"))
+		r.Check("test encode with h264_rkmpp", encode.TrialEncode(ctx, *set.ffmpeg, "h264_rkmpp"))
 	}
 
 	client, err := control.NewClient(*set.url, os.Getenv("NODE_TOKEN"))
@@ -71,33 +69,6 @@ func checkRKMPPDevices(dev string) error {
 		if _, err := os.Stat(filepath.Join(dev, name)); err != nil {
 			return fmt.Errorf("%s is missing. Pass it into the container", filepath.Join(dev, name))
 		}
-	}
-	return nil
-}
-
-// hasEncoder reports whether this ffmpeg build includes an encoder.
-func hasEncoder(ctx context.Context, ffmpeg, name string) error {
-	out, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-encoders").Output()
-	if err != nil {
-		return err
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if fields := strings.Fields(line); len(fields) > 1 && fields[1] == name {
-			return nil
-		}
-	}
-	return fmt.Errorf("%s does not include %s; use jellyfin-ffmpeg, as the worker image does", ffmpeg, name)
-}
-
-// testEncode runs a one-second encode, so a wrong device mount, permission or
-// driver shows up here and not on the first real job.
-func testEncode(ctx context.Context, ffmpeg, encoder string) error {
-	out, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-v", "error", "-nostdin",
-		"-f", "lavfi", "-i", "testsrc2=size=256x144:rate=24:duration=1",
-		"-pix_fmt", "nv12", "-c:v", encoder, "-f", "null", "-").CombinedOutput()
-	if err != nil {
-		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		return fmt.Errorf("%w: %s", err, lines[len(lines)-1])
 	}
 	return nil
 }

@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"jellyfinner/internal/config"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
+	"jellyfinner/internal/nodes"
 )
 
 var nodeName = regexp.MustCompile(`^[a-z0-9-]+$`)
@@ -28,7 +29,7 @@ type NodeSpec struct {
 // NodeSecrets is what a new node needs in its compose file. Only hashes of the
 // token are stored, so this is the one time it can be shown.
 type NodeSecrets struct {
-	Node       queue.Node
+	Node       model.Node
 	Token      string
 	SigningKey string // edge nodes only
 }
@@ -44,11 +45,11 @@ func (s *Service) AddNode(spec NodeSpec) (NodeSecrets, error) {
 	if err != nil {
 		return out, err
 	}
-	token, err := queue.NewSecret()
+	token, err := nodes.NewSecret()
 	if err != nil {
 		return out, err
 	}
-	node := queue.Node{Name: spec.Name, Kind: queue.NodeWorker, TokenHash: queue.HashToken(token), Allow: prefixes}
+	node := model.Node{Name: spec.Name, Kind: model.NodeWorker, TokenHash: nodes.HashToken(token), Allow: prefixes}
 	if spec.Edge {
 		u, err := url.Parse(spec.URL)
 		if err != nil || u.Scheme != "https" || u.Host == "" {
@@ -57,14 +58,14 @@ func (s *Service) AddNode(spec NodeSpec) (NodeSecrets, error) {
 		if spec.QuotaGB <= 0 {
 			return out, errors.New("an edge node needs a positive quota")
 		}
-		node.Kind, node.URL, node.QuotaBytes = queue.NodeEdge, strings.TrimSuffix(spec.URL, "/"), spec.QuotaGB*1e9
-		if node.SigningKey, err = queue.NewSecret(); err != nil {
+		node.Kind, node.URL, node.QuotaBytes = model.NodeEdge, strings.TrimSuffix(spec.URL, "/"), spec.QuotaGB*1e9
+		if node.SigningKey, err = nodes.NewSecret(); err != nil {
 			return out, err
 		}
 	} else if spec.URL != "" || spec.QuotaGB != 0 {
 		return out, errors.New("a URL and a quota are only for edge nodes")
 	}
-	if err := s.Store.AddNode(&node); err != nil {
+	if err := s.Nodes.Add(&node); err != nil {
 		return out, err
 	}
 	return NodeSecrets{Node: node, Token: token, SigningKey: node.SigningKey}, nil
@@ -73,11 +74,11 @@ func (s *Service) AddNode(spec NodeSpec) (NodeSecrets, error) {
 // RotateNodeToken issues a new token. The old one stops working within
 // seconds.
 func (s *Service) RotateNodeToken(name string) (string, error) {
-	token, err := queue.NewSecret()
+	token, err := nodes.NewSecret()
 	if err != nil {
 		return "", err
 	}
-	if err := s.Store.SetNodeToken(name, queue.HashToken(token)); err != nil {
+	if err := s.Nodes.SetToken(name, nodes.HashToken(token)); err != nil {
 		return "", err
 	}
 	return token, nil

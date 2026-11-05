@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"jellyfinner/internal/config"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 // Title states shown to operators.
@@ -25,7 +25,7 @@ type TitleRow struct {
 	Title string
 	State string
 	Size  int64
-	Job   *queue.Job
+	Job   *model.Job
 }
 
 // Titles lists titles matching a case-insensitive search.
@@ -53,26 +53,26 @@ func (s *Service) Titles(search string, limit int) ([]TitleRow, int, error) {
 	return rows, total, nil
 }
 
-func (s *Service) titleRow(src *queue.Source, j *queue.Job) TitleRow {
+func (s *Service) titleRow(src *model.Source, j *model.Job) TitleRow {
 	return TitleRow{Path: src.Path, Title: Title(src.Path), Size: src.Size, Job: j, State: s.titleState(src, j)}
 }
 
-func (s *Service) titleState(src *queue.Source, j *queue.Job) string {
+func (s *Service) titleState(src *model.Source, j *model.Job) string {
 	if src.MissingSince != 0 {
 		return TitleMissing
 	}
 	if j != nil {
 		switch j.State {
-		case queue.StateQueued:
+		case model.StateQueued:
 			return TitleQueued
-		case queue.StateRunning, queue.StatePublishing:
+		case model.StateRunning, model.StatePublishing:
 			return TitleEncoding
 		}
 	}
 	switch {
 	case src.Encoded():
 		return TitleReady
-	case j != nil && j.State == queue.StateFailed && j.SourceSize == src.Size && j.SourceMtime == src.MtimeNS:
+	case j != nil && j.State == model.StateFailed && j.SourceSize == src.Size && j.SourceMtime == src.MtimeNS:
 		return TitleFailed
 	case s.Cfg.Mode == config.ModeManual:
 		return TitleStub

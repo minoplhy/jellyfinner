@@ -22,17 +22,10 @@ import (
 	"jellyfinner/internal/edge"
 )
 
-// Client is the part of the control API the agent uses.
-type Client interface {
-	EdgePoll(ctx context.Context, req control.EdgePollRequest) (*control.EdgePollResponse, error)
-	EdgeAck(ctx context.Context, req control.EdgeAck) error
-	EdgeDownload(ctx context.Context, hash, token string, offset int64) (*http.Response, error)
-}
-
 // Agent holds the node's settings. Dir must be readable by whatever serves viewers, and
 // only the agent may write to it.
 type Agent struct {
-	Client  Client
+	Client  control.API
 	Dir     string
 	Poll    time.Duration
 	Limit   int64 // bytes per second, 0 for no cap

@@ -34,7 +34,7 @@ const (
 )
 
 type worker struct {
-	client    *control.Client
+	client    control.API
 	cfg       pipeline.Config
 	poll      time.Duration
 	heartbeat time.Duration

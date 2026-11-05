@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,27 +26,5 @@ func TestCheckRKMPPDevices(t *testing.T) {
 	}
 	if err := checkRKMPPDevices(dev); err != nil {
 		t.Fatalf("all devices present: %v", err)
-	}
-}
-
-func TestHasEncoder(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not installed")
-	}
-	ctx := context.Background()
-	if err := hasEncoder(ctx, "ffmpeg", "aac"); err != nil {
-		t.Errorf("every ffmpeg has aac: %v", err)
-	}
-	if err := hasEncoder(ctx, "ffmpeg", "no_such_encoder"); err == nil {
-		t.Error("want an error for a missing encoder")
-	}
-}
-
-func TestTestEncodeReportsFailure(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not installed")
-	}
-	if err := testEncode(context.Background(), "ffmpeg", "no_such_encoder"); err == nil {
-		t.Error("want an error for a missing encoder")
 	}
 }

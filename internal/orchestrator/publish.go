@@ -14,8 +14,8 @@ import (
 	"strings"
 
 	"jellyfinner/internal/encode"
+	"jellyfinner/internal/model"
 	"jellyfinner/internal/pipeline"
-	"jellyfinner/internal/queue"
 )
 
 // PublishPending handles every job waiting to be published.
@@ -33,7 +33,7 @@ func (s *Service) PublishPending(ctx context.Context) {
 	}
 }
 
-func (s *Service) publishOne(ctx context.Context, j *queue.Job) {
+func (s *Service) publishOne(ctx context.Context, j *model.Job) {
 	incoming := filepath.Join(s.Cfg.IncomingDir, j.ID)
 	video, err := s.publish(j, incoming)
 	if err != nil {
@@ -73,7 +73,7 @@ func (s *Service) publishOne(ctx context.Context, j *queue.Job) {
 
 // announce names whoever asked for the title, and clears the played flag their
 // stub left, or the finished title would show as already watched.
-func (s *Service) announce(ctx context.Context, j *queue.Job) {
+func (s *Service) announce(ctx context.Context, j *model.Job) {
 	requests, err := s.Store.TakeRequests(j.Path)
 	if err != nil {
 		s.Log.Printf("requests %s: %v", j.Path, err)
@@ -100,7 +100,7 @@ func (s *Service) announce(ctx context.Context, j *queue.Job) {
 // publish checks the upload against its manifest, then renames it into the
 // library. Sidecars go first, so subtitles are there when the video appears.
 // The rename replaces any previous encode in one step.
-func (s *Service) publish(j *queue.Job, incoming string) (pipeline.File, error) {
+func (s *Service) publish(j *model.Job, incoming string) (pipeline.File, error) {
 	var none pipeline.File
 	var m pipeline.Manifest
 	data, err := os.ReadFile(filepath.Join(incoming, pipeline.ManifestName))

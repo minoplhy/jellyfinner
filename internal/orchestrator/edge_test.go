@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 func (f *fixture) edgeSetup(quota int64) {
-	if err := f.store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: quota}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: quota}); err != nil {
 		panic(err)
 	}
 }
@@ -45,7 +45,7 @@ func TestPinOnlyFinishedEncodes(t *testing.T) {
 		t.Error("a duplicate must be refused")
 	}
 	ps, _ := f.store.NodePlacements("edge1")
-	if len(ps) != 1 || ps[0].State != queue.PlacementPulling || ps[0].Output != "a.mp4" || ps[0].Size != 5 {
+	if len(ps) != 1 || ps[0].State != model.PlacementPulling || ps[0].Output != "a.mp4" || ps[0].Size != 5 {
 		t.Errorf("placements = %+v", ps)
 	}
 }
@@ -85,7 +85,7 @@ func TestUnpinWarnsWhenRecentlyPlayed(t *testing.T) {
 		t.Fatal(err)
 	}
 	ps, _ := f.store.NodePlacements("edge1")
-	if ps[0].State != queue.PlacementDeleting {
+	if ps[0].State != model.PlacementDeleting {
 		t.Errorf("state = %s", ps[0].State)
 	}
 	if _, err := f.store.ActivePlacement("a.mp4", "edge1"); err == nil {
@@ -127,7 +127,7 @@ func TestReencodeDropsOldCopyAndRepulls(t *testing.T) {
 	for _, p := range ps {
 		states[p.SHA256] = p.State
 	}
-	if states[old.EncodedSHA256] != queue.PlacementDeleting || states[cur.EncodedSHA256] != queue.PlacementPulling {
+	if states[old.EncodedSHA256] != model.PlacementDeleting || states[cur.EncodedSHA256] != model.PlacementPulling {
 		t.Errorf("states = %v", states)
 	}
 }
@@ -165,7 +165,7 @@ func TestDeletedSourceWithdrawsPlacement(t *testing.T) {
 	f.advance(2 * time.Hour)
 	f.scan()
 	ps, _ := f.store.NodePlacements("edge1")
-	if len(ps) != 1 || ps[0].State != queue.PlacementDeleting {
+	if len(ps) != 1 || ps[0].State != model.PlacementDeleting {
 		t.Errorf("placements = %+v", ps)
 	}
 }
@@ -202,7 +202,7 @@ func TestProbeToleratesTrailingSlash(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	if err := f.store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: srv.URL + "/"}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: srv.URL + "/"}); err != nil {
 		t.Fatal(err)
 	}
 	f.svc.probeNodes(context.Background())
@@ -220,7 +220,7 @@ func TestProbeUnderAPath(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	if err := f.store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: srv.URL + "/edge1"}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: srv.URL + "/edge1"}); err != nil {
 		t.Fatal(err)
 	}
 	f.svc.probeNodes(context.Background())

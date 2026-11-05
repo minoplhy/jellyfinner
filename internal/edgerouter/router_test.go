@@ -8,13 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"jellyfinner/internal/config"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/database"
+	"jellyfinner/internal/database/dbtest"
+	"jellyfinner/internal/jellyfin/jellyfintest"
+	"jellyfinner/internal/model"
 )
 
 const (
@@ -25,6 +27,7 @@ const (
 var hash = strings.Repeat("a", 64)
 
 type fakeJellyfin struct {
+	jellyfintest.Unimplemented
 	users map[string]string
 	items map[string]string
 	calls int
@@ -48,7 +51,7 @@ func (f *fakeJellyfin) ItemPath(_ context.Context, id string) (string, error) {
 type fixture struct {
 	t      *testing.T
 	router *Router
-	store  *queue.Store
+	store  database.Store
 	jf     *fakeJellyfin
 	hits   *int
 	now    time.Time
@@ -61,13 +64,10 @@ func newFixture(t *testing.T) *fixture { return newFixtureAt(t, "") }
 // newFixtureAt puts Jellyfin under a Base URL, such as /jf.
 func newFixtureAt(t *testing.T, base string) *fixture {
 	t.Helper()
-	store, err := queue.Open(filepath.Join(t.TempDir(), "s.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	f := &fixture{t: t, store: store, now: time.Unix(2000000, 0), hits: new(int)}
-	store.Now = func() time.Time { return f.now }
+	f := &fixture{t: t, now: time.Unix(2000000, 0), hits: new(int)}
+	clock := func() time.Time { return f.now }
+	store := dbtest.Open(t, database.Options{Now: clock})
+	f.store = store
 	f.jf = &fakeJellyfin{users: map[string]string{"alice-token": "alice", "bob-token": "bob"}, items: map[string]string{itemID: "/lib/Movies/A.mp4"}}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*f.hits++
@@ -83,16 +83,17 @@ func newFixtureAt(t *testing.T, base string) *fixture {
 		LibraryDir: "/lib", EdgeURLTTL: 24 * time.Hour,
 		EdgeViewers: map[string]string{"alice": "edge1"},
 	}
-	if err := store.AddNode(&queue.Node{Name: "edge1", Kind: queue.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", SigningKey: sign}); err != nil {
+	if err := store.AddNode(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", SigningKey: sign}); err != nil {
 		t.Fatal(err)
 	}
 	f.router = NewRouter(cfg, store, f.jf, u, log.New(io.Discard, "", 0))
+	f.router.Now = clock
 	return f
 }
 
 func (f *fixture) cached() {
 	f.t.Helper()
-	if err := f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "Movies/A.mp4", Size: 5}); err != nil {
+	if err := f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "Movies/A.mp4", Size: 5}); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := f.store.ActivatePlacement("edge1", hash); err != nil {
@@ -208,16 +209,16 @@ func TestFailsOpenToOrigin(t *testing.T) {
 	cases := map[string]func(*fixture){
 		"not cached": func(*fixture) {},
 		"pulling": func(f *fixture) {
-			f.store.AddPlacement(&queue.Placement{Node: "edge1", SHA256: hash, Output: "Movies/A.mp4", Size: 5})
+			f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "Movies/A.mp4", Size: 5})
 			f.healthy()
 		},
 		"deleting": func(f *fixture) {
 			f.cached()
-			f.store.SetPlacementState("edge1", hash, queue.PlacementDeleting, "")
+			f.store.SetPlacementState("edge1", hash, model.PlacementDeleting, "")
 		},
 		"failed": func(f *fixture) {
 			f.cached()
-			f.store.SetPlacementState("edge1", hash, queue.PlacementFailed, "x")
+			f.store.SetPlacementState("edge1", hash, model.PlacementFailed, "x")
 		},
 		"probe failing": func(f *fixture) {
 			f.cached()

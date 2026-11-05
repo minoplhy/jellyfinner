@@ -9,7 +9,7 @@ import (
 
 	"jellyfinner/internal/control"
 	"jellyfinner/internal/edge"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 const (
@@ -26,7 +26,7 @@ func nodeName(r *http.Request) string {
 // and a worker can never reach edge orders or files.
 func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.store.EdgeNode(nodeName(r)) == nil {
+		if s.nodes.Edge(nodeName(r)) == nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -36,7 +36,7 @@ func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) workerOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.store.EdgeNode(nodeName(r)) != nil {
+		if s.nodes.Edge(nodeName(r)) != nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -74,20 +74,20 @@ func (s *Server) edgePoll(w http.ResponseWriter, r *http.Request) {
 			resp.Orders = append(resp.Orders, control.EdgeOrder{Verb: control.VerbDelete, SHA256: hash})
 		}
 	}
-	expires := s.store.Now().Add(downloadTokenLife)
+	expires := s.Now().Add(downloadTokenLife)
 	for _, p := range placements {
 		switch p.State {
-		case queue.PlacementPulling:
+		case model.PlacementPulling:
 			resp.Orders = append(resp.Orders, control.EdgeOrder{
 				Verb: control.VerbPull, SHA256: p.SHA256, Size: p.Size,
 				Token: edge.DownloadToken(s.cfg.EdgeTokenKey, node, p.SHA256, expires),
 			})
-		case queue.PlacementDeleting:
+		case model.PlacementDeleting:
 			resp.Orders = append(resp.Orders, control.EdgeOrder{Verb: control.VerbDelete, SHA256: p.SHA256})
-		case queue.PlacementActive:
+		case model.PlacementActive:
 			if !held[p.SHA256] {
 				// Never redirect viewers to a file the node says it lacks.
-				if err := s.store.SetPlacementState(node, p.SHA256, queue.PlacementFailed, "missing on node"); err != nil {
+				if err := s.store.SetPlacementState(node, p.SHA256, model.PlacementFailed, "missing on node"); err != nil {
 					s.fail(w, err)
 					return
 				}
@@ -141,12 +141,12 @@ func (s *Server) edgeFile(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := edge.CheckDownloadToken(s.cfg.EdgeTokenKey, node, hash, r.Header.Get("X-Download-Token"), s.store.Now()); err != nil {
+	if err := edge.CheckDownloadToken(s.cfg.EdgeTokenKey, node, hash, r.Header.Get("X-Download-Token"), s.Now()); err != nil {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	p, err := s.store.PullingPlacement(node, hash)
-	if errors.Is(err, queue.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}

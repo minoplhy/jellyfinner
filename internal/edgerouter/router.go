@@ -16,8 +16,11 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
+	"jellyfinner/internal/database"
 	"jellyfinner/internal/edge"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/jellyfin"
+	"jellyfinner/internal/model"
+	"jellyfinner/internal/nodes"
 )
 
 const (
@@ -32,12 +35,6 @@ var streamPath = regexp.MustCompile(`(?i)^/videos/([0-9a-f-]{32,36})(?:/[^/]+)?/
 // tokenInHeader finds Token="..." in a MediaBrowser Authorization header.
 var tokenInHeader = regexp.MustCompile(`(?i)\bToken="([^"]+)"`)
 
-// Jellyfin is what the router asks of the media server.
-type Jellyfin interface {
-	ItemPath(ctx context.Context, itemID string) (string, error)
-	Username(ctx context.Context, token string) (string, error)
-}
-
 type cached struct {
 	value string
 	until time.Time
@@ -49,11 +46,14 @@ type cached struct {
 // streaming from the origin.
 type Router struct {
 	cfg      *config.Config
-	store    *queue.Store
-	jellyfin Jellyfin
+	store    database.Store
+	nodes    *nodes.Registry
+	jellyfin jellyfin.API
 	proxy    http.Handler
 	base     string // Jellyfin's Base URL, such as /jf
 	log      *log.Logger
+	// Now is the clock, replaceable in tests.
+	Now func() time.Time
 
 	mu    sync.Mutex
 	users map[string]cached
@@ -63,7 +63,7 @@ type Router struct {
 // NewRouter returns a router in front of upstream. A path in upstream is
 // Jellyfin's Base URL. Requests pass with their path unchanged, because
 // Jellyfin expects that prefix itself.
-func NewRouter(cfg *config.Config, store *queue.Store, jf Jellyfin, upstream *url.URL, logger *log.Logger) *Router {
+func NewRouter(cfg *config.Config, store database.Store, jf jellyfin.API, upstream *url.URL, logger *log.Logger) *Router {
 	base, _ := config.BasePath(upstream.Path)
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
@@ -88,7 +88,10 @@ func NewRouter(cfg *config.Config, store *queue.Store, jf Jellyfin, upstream *ur
 			}
 		},
 	}
-	return &Router{cfg: cfg, store: store, jellyfin: jf, proxy: proxy, base: base, log: logger, users: map[string]cached{}, items: map[string]cached{}}
+	rt := &Router{cfg: cfg, store: store, jellyfin: jf, proxy: proxy, base: base, log: logger, Now: time.Now,
+		users: map[string]cached{}, items: map[string]cached{}}
+	rt.nodes = nodes.New(store, func() time.Time { return rt.Now() })
+	return rt
 }
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +160,7 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 	if err != nil {
 		return "", err
 	}
-	node := rt.store.EdgeNode(rt.cfg.EdgeViewers[user])
+	node := rt.nodes.Edge(rt.cfg.EdgeViewers[user])
 	if node == nil {
 		return "", nil
 	}
@@ -172,7 +175,7 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 		return "", nil
 	}
 	p, err := rt.store.ActivePlacement(output, node.Name)
-	if errors.Is(err, queue.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		return "", nil
 	}
 	if err != nil {
@@ -182,7 +185,7 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 	if err != nil {
 		return "", err
 	}
-	now := rt.store.Now()
+	now := rt.Now()
 	if !Servable(status, now) {
 		return "", nil
 	}
@@ -198,7 +201,7 @@ const HealthWindow = time.Minute
 
 // Servable is the health rule: the orchestrator's probe passed and the agent reported
 // recently.
-func Servable(st queue.NodeStatus, now time.Time) bool {
+func Servable(st model.NodeStatus, now time.Time) bool {
 	return st.Healthy && now.Sub(time.Unix(st.LastSeen, 0)) < HealthWindow
 }
 
@@ -218,7 +221,7 @@ func relative(root, path string) (string, bool) {
 }
 
 func (rt *Router) lookup(cache map[string]cached, key string, ttl time.Duration, fetch func() (string, error)) (string, error) {
-	now := rt.store.Now()
+	now := rt.Now()
 	rt.mu.Lock()
 	entry, ok := cache[key]
 	if ok && now.After(entry.until) {

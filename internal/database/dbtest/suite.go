@@ -1,42 +1,79 @@
-package queue
+// Package dbtest is the behaviour every database.Store backend must have. A
+// backend's own test calls Run; other packages' tests use Open for a real,
+// throwaway store.
+package dbtest
 
 import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"jellyfinner/internal/database"
+	"jellyfinner/internal/database/sqlite"
+	"jellyfinner/internal/model"
 )
+
+// Opener opens an empty store for one test.
+type Opener func(t *testing.T, opts database.Options) database.Store
+
+// Run checks a backend against every behaviour the rest of the program relies on.
+func Run(t *testing.T, open Opener) {
+	x := suite{opener: open}
+	v := reflect.ValueOf(x)
+	for i := range v.NumMethod() {
+		name := v.Type().Method(i).Name
+		if !strings.HasPrefix(name, "Test") {
+			continue
+		}
+		method := v.Method(i)
+		t.Run(strings.TrimPrefix(name, "Test"), func(t *testing.T) {
+			method.Call([]reflect.Value{reflect.ValueOf(t)})
+		})
+	}
+}
+
+// Open returns a SQLite store in a temporary directory, closed when the test ends.
+func Open(t *testing.T, opts database.Options) database.Store {
+	t.Helper()
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+type suite struct{ opener Opener }
+
+// open starts a store on a test clock, with no retry delay unless opts says.
+func (x suite) open(t *testing.T, opts database.Options) (database.Store, *clock) {
+	t.Helper()
+	c := &clock{t: time.Unix(1000000, 0)}
+	opts.Now = c.now
+	s := x.opener(t, opts)
+	t.Cleanup(func() { s.Close() })
+	return s, c
+}
 
 type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time      { return c.t }
 func (c *clock) add(d time.Duration) { c.t = c.t.Add(d) }
 
-func open(t *testing.T) (*Store, *clock) {
+func addJob(t *testing.T, s database.Store, id string, priority int) {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { s.Close() })
-	c := &clock{t: time.Unix(1000000, 0)}
-	s.Now = c.now
-	s.RetryDelay = 0
-	return s, c
-}
-
-func addJob(t *testing.T, s *Store, id string, priority int) {
-	t.Helper()
-	ok, err := s.Enqueue(&Job{ID: id, Path: id + ".mkv", OutputPath: id + ".mp4", Priority: priority})
+	ok, err := s.Enqueue(&model.Job{ID: id, Path: id + ".mkv", OutputPath: id + ".mp4", Priority: priority})
 	if err != nil || !ok {
 		t.Fatalf("Enqueue(%s) = %v, %v", id, ok, err)
 	}
 }
 
-func claim(t *testing.T, s *Store) *Job {
+func claim(t *testing.T, s database.Store) *model.Job {
 	t.Helper()
 	j, err := s.Claim("worker1", time.Minute)
 	if err != nil {
@@ -45,25 +82,25 @@ func claim(t *testing.T, s *Store) *Job {
 	return j
 }
 
-func TestEnqueueDedupes(t *testing.T) {
-	s, _ := open(t)
-	addJob(t, s, "a", PriorityNew)
-	ok, err := s.Enqueue(&Job{ID: "a", Path: "a.mkv", OutputPath: "a.mp4"})
+func (x suite) TestEnqueueDedupes(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	addJob(t, s, "a", model.PriorityNew)
+	ok, err := s.Enqueue(&model.Job{ID: "a", Path: "a.mkv", OutputPath: "a.mp4"})
 	if err != nil || ok {
 		t.Errorf("duplicate Enqueue = %v, %v", ok, err)
 	}
 }
 
-func TestClaimOrder(t *testing.T) {
-	s, c := open(t)
-	if err := s.SetMeta("backfill_active", "1"); err != nil {
+func (x suite) TestClaimOrder(t *testing.T) {
+	s, c := x.open(t, database.Options{})
+	if err := s.SetMeta(model.MetaBackfillActive, "1"); err != nil {
 		t.Fatal(err)
 	}
-	addJob(t, s, "backfill", PriorityBackfill)
+	addJob(t, s, "backfill", model.PriorityBackfill)
 	c.add(time.Second)
-	addJob(t, s, "first", PriorityNew)
+	addJob(t, s, "first", model.PriorityNew)
 	c.add(time.Second)
-	addJob(t, s, "second", PriorityNew)
+	addJob(t, s, "second", model.PriorityNew)
 
 	for _, want := range []string{"first", "second", "backfill"} {
 		if j := claim(t, s); j == nil || j.ID != want {
@@ -75,9 +112,9 @@ func TestClaimOrder(t *testing.T) {
 	}
 }
 
-func TestLeaseExpiryRequeuesThenFails(t *testing.T) {
-	s, c := open(t)
-	addJob(t, s, "a", PriorityNew)
+func (x suite) TestLeaseExpiryRequeuesThenFails(t *testing.T) {
+	s, c := x.open(t, database.Options{})
+	addJob(t, s, "a", model.PriorityNew)
 	for attempt := 1; attempt <= 3; attempt++ {
 		j := claim(t, s)
 		if j == nil || j.Attempts != attempt {
@@ -96,7 +133,7 @@ func TestLeaseExpiryRequeuesThenFails(t *testing.T) {
 			t.Fatalf("attempt %d: failed = %v", attempt, failed)
 		}
 	}
-	if j, _ := s.Get("a"); j.State != StateFailed {
+	if j, _ := s.Get("a"); j.State != model.StateFailed {
 		t.Errorf("state = %s", j.State)
 	}
 	if j := claim(t, s); j != nil {
@@ -104,10 +141,9 @@ func TestLeaseExpiryRequeuesThenFails(t *testing.T) {
 	}
 }
 
-func TestRetryDelayGrowsWithAttempts(t *testing.T) {
-	s, c := open(t)
-	s.RetryDelay = time.Minute
-	addJob(t, s, "a", PriorityNew)
+func (x suite) TestRetryDelayGrowsWithAttempts(t *testing.T) {
+	s, c := x.open(t, database.Options{RetryDelay: time.Minute})
+	addJob(t, s, "a", model.PriorityNew)
 
 	j := claim(t, s)
 	if _, err := s.Fail(j.ID, j.LeaseID, "sftp down", "", 3); err != nil {
@@ -143,9 +179,9 @@ func TestRetryDelayGrowsWithAttempts(t *testing.T) {
 	}
 }
 
-func TestHeartbeatExtendsLease(t *testing.T) {
-	s, c := open(t)
-	addJob(t, s, "a", PriorityNew)
+func (x suite) TestHeartbeatExtendsLease(t *testing.T) {
+	s, c := x.open(t, database.Options{})
+	addJob(t, s, "a", model.PriorityNew)
 	j := claim(t, s)
 	c.add(50 * time.Second)
 	if cancel, err := s.Heartbeat(j.ID, j.LeaseID, "encode", 0.5, time.Minute); err != nil || cancel {
@@ -156,14 +192,14 @@ func TestHeartbeatExtendsLease(t *testing.T) {
 		t.Fatal(failed, err)
 	}
 	got, _ := s.Get("a")
-	if got.State != StateRunning || got.Stage != "encode" || got.Fraction != 0.5 {
+	if got.State != model.StateRunning || got.Stage != "encode" || got.Fraction != 0.5 {
 		t.Errorf("job = %+v", got)
 	}
 }
 
-func TestStaleLeaseCannotAct(t *testing.T) {
-	s, c := open(t)
-	addJob(t, s, "a", PriorityNew)
+func (x suite) TestStaleLeaseCannotAct(t *testing.T) {
+	s, c := x.open(t, database.Options{})
+	addJob(t, s, "a", model.PriorityNew)
 	old := claim(t, s)
 	c.add(2 * time.Minute)
 	if _, err := s.ExpireLeases(3); err != nil {
@@ -171,26 +207,26 @@ func TestStaleLeaseCannotAct(t *testing.T) {
 	}
 	current := claim(t, s)
 
-	if _, err := s.Heartbeat("a", old.LeaseID, "encode", 0, time.Minute); !errors.Is(err, ErrLeaseLost) {
+	if _, err := s.Heartbeat("a", old.LeaseID, "encode", 0, time.Minute); !errors.Is(err, model.ErrLeaseLost) {
 		t.Errorf("Heartbeat: %v", err)
 	}
-	if err := s.Complete("a", old.LeaseID, "{}", ""); !errors.Is(err, ErrLeaseLost) {
+	if err := s.Complete("a", old.LeaseID, "{}", ""); !errors.Is(err, model.ErrLeaseLost) {
 		t.Errorf("Complete: %v", err)
 	}
-	if _, err := s.Fail("a", old.LeaseID, "x", "", 3); !errors.Is(err, ErrLeaseLost) {
+	if _, err := s.Fail("a", old.LeaseID, "x", "", 3); !errors.Is(err, model.ErrLeaseLost) {
 		t.Errorf("Fail: %v", err)
 	}
 	if err := s.Complete("a", current.LeaseID, "{}", ""); err != nil {
 		t.Errorf("the current lease must work: %v", err)
 	}
-	if err := s.Complete("a", "", "{}", ""); !errors.Is(err, ErrLeaseLost) {
+	if err := s.Complete("a", "", "{}", ""); !errors.Is(err, model.ErrLeaseLost) {
 		t.Errorf("an empty lease must never match: %v", err)
 	}
 }
 
-func TestFailRetriesThenStops(t *testing.T) {
-	s, _ := open(t)
-	addJob(t, s, "a", PriorityNew)
+func (x suite) TestFailRetriesThenStops(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	addJob(t, s, "a", model.PriorityNew)
 	for attempt := 1; attempt <= 2; attempt++ {
 		j := claim(t, s)
 		final, err := s.Fail(j.ID, j.LeaseID, "boom", "the log", 2)
@@ -199,31 +235,31 @@ func TestFailRetriesThenStops(t *testing.T) {
 		}
 	}
 	j, _ := s.Get("a")
-	if j.State != StateFailed || j.Error != "boom" || j.Log != "the log" {
+	if j.State != model.StateFailed || j.Error != "boom" || j.Log != "the log" {
 		t.Errorf("job = %+v", j)
 	}
 	if err := s.Retry("a"); err != nil {
 		t.Fatal(err)
 	}
-	if j, _ := s.Get("a"); j.State != StateQueued || j.Attempts != 0 {
+	if j, _ := s.Get("a"); j.State != model.StateQueued || j.Attempts != 0 {
 		t.Errorf("after retry: %+v", j)
 	}
 }
 
-func TestFailedByNodeCountsRecentFinalFailures(t *testing.T) {
-	s, c := open(t)
-	addJob(t, s, "old", PriorityNew)
+func (x suite) TestFailedByNodeCountsRecentFinalFailures(t *testing.T) {
+	s, c := x.open(t, database.Options{})
+	addJob(t, s, "old", model.PriorityNew)
 	j := claim(t, s)
 	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 1); err != nil {
 		t.Fatal(err)
 	}
 	c.add(25 * time.Hour)
-	addJob(t, s, "new", PriorityNew)
+	addJob(t, s, "new", model.PriorityNew)
 	j = claim(t, s)
 	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 1); err != nil {
 		t.Fatal(err)
 	}
-	addJob(t, s, "retrying", PriorityNew)
+	addJob(t, s, "retrying", model.PriorityNew)
 	j = claim(t, s)
 	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 3); err != nil {
 		t.Fatal(err)
@@ -234,16 +270,16 @@ func TestFailedByNodeCountsRecentFinalFailures(t *testing.T) {
 	}
 }
 
-func TestListFiltered(t *testing.T) {
-	s, _ := open(t)
+func (x suite) TestListFiltered(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
 	for _, id := range []string{"a", "b", "c", "100%_x"} {
-		addJob(t, s, id, PriorityNew)
+		addJob(t, s, id, model.PriorityNew)
 	}
 	j := claim(t, s)
 	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 1); err != nil {
 		t.Fatal(err)
 	}
-	ids := func(f JobFilter, limit, offset int) (string, int) {
+	ids := func(f model.JobFilter, limit, offset int) (string, int) {
 		t.Helper()
 		jobs, total, err := s.ListFiltered(f, limit, offset)
 		if err != nil {
@@ -255,32 +291,32 @@ func TestListFiltered(t *testing.T) {
 		}
 		return strings.Join(got, ","), total
 	}
-	if got, total := ids(JobFilter{State: StateFailed, Node: "worker1"}, 10, 0); got != j.ID || total != 1 {
+	if got, total := ids(model.JobFilter{State: model.StateFailed, Node: "worker1"}, 10, 0); got != j.ID || total != 1 {
 		t.Errorf("failed on worker1 = %q, %d", got, total)
 	}
-	if got, total := ids(JobFilter{Node: "worker2"}, 10, 0); got != "" || total != 0 {
+	if got, total := ids(model.JobFilter{Node: "worker2"}, 10, 0); got != "" || total != 0 {
 		t.Errorf("worker2 = %q, %d", got, total)
 	}
-	if _, total := ids(JobFilter{State: StateQueued}, 10, 0); total != 3 {
+	if _, total := ids(model.JobFilter{State: model.StateQueued}, 10, 0); total != 3 {
 		t.Errorf("queued total = %d", total)
 	}
-	first, total := ids(JobFilter{}, 2, 0)
-	second, _ := ids(JobFilter{}, 2, 2)
+	first, total := ids(model.JobFilter{}, 2, 0)
+	second, _ := ids(model.JobFilter{}, 2, 2)
 	if total != 4 || len(strings.Split(first, ",")) != 2 || len(strings.Split(second, ",")) != 2 || first == second {
 		t.Errorf("pages = %q then %q of %d", first, second, total)
 	}
 	// % and _ in a search are literal, and case does not matter.
-	if got, _ := ids(JobFilter{Search: "0%_X"}, 10, 0); got != "100%_x" {
+	if got, _ := ids(model.JobFilter{Search: "0%_X"}, 10, 0); got != "100%_x" {
 		t.Errorf("literal search = %q", got)
 	}
-	if got, _ := ids(JobFilter{Search: "%"}, 10, 0); got != "100%_x" {
+	if got, _ := ids(model.JobFilter{Search: "%"}, 10, 0); got != "100%_x" {
 		t.Errorf("percent search = %q", got)
 	}
 }
 
-func TestCancelRunningReachesWorker(t *testing.T) {
-	s, _ := open(t)
-	addJob(t, s, "a", PriorityNew)
+func (x suite) TestCancelRunningReachesWorker(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	addJob(t, s, "a", model.PriorityNew)
 	j := claim(t, s)
 	if err := s.Cancel("a"); err != nil {
 		t.Fatal(err)
@@ -289,13 +325,13 @@ func TestCancelRunningReachesWorker(t *testing.T) {
 	if err != nil || !cancel {
 		t.Errorf("Heartbeat = %v, %v", cancel, err)
 	}
-	if err := s.Complete(j.ID, j.LeaseID, "{}", ""); !errors.Is(err, ErrLeaseLost) {
+	if err := s.Complete(j.ID, j.LeaseID, "{}", ""); !errors.Is(err, model.ErrLeaseLost) {
 		t.Errorf("a cancelled job must not publish: %v", err)
 	}
 	if _, err := s.Fail(j.ID, j.LeaseID, "stopped", "partial log", 3); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := s.Get("a"); got.State != StateCancelled || got.Log != "partial log" {
+	if got, _ := s.Get("a"); got.State != model.StateCancelled || got.Log != "partial log" {
 		t.Errorf("job = %+v", got)
 	}
 	if err := s.Cancel("a"); err == nil {
@@ -303,24 +339,24 @@ func TestCancelRunningReachesWorker(t *testing.T) {
 	}
 }
 
-func TestCancelForPathKeepsOne(t *testing.T) {
-	s, _ := open(t)
+func (x suite) TestCancelForPathKeepsOne(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
 	for _, id := range []string{"old", "new"} {
-		if _, err := s.Enqueue(&Job{ID: id, Path: "x.mkv", OutputPath: "x.mp4"}); err != nil {
+		if _, err := s.Enqueue(&model.Job{ID: id, Path: "x.mkv", OutputPath: "x.mp4"}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if n, err := s.CancelForPath("x.mkv", "new"); err != nil || n != 1 {
 		t.Fatalf("CancelForPath = %d, %v", n, err)
 	}
-	if j, _ := s.Get("new"); j.State != StateQueued {
+	if j, _ := s.Get("new"); j.State != model.StateQueued {
 		t.Errorf("kept job = %+v", j)
 	}
 }
 
-func TestPublishFailed(t *testing.T) {
-	s, _ := open(t)
-	addJob(t, s, "a", PriorityNew)
+func (x suite) TestPublishFailed(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	addJob(t, s, "a", model.PriorityNew)
 	j := claim(t, s)
 	if err := s.Complete(j.ID, j.LeaseID, "{}", ""); err != nil {
 		t.Fatal(err)
@@ -332,26 +368,13 @@ func TestPublishFailed(t *testing.T) {
 	if err != nil || final {
 		t.Fatalf("PublishFailed = %v, %v", final, err)
 	}
-	if got, _ := s.Get("a"); got.State != StateQueued {
+	if got, _ := s.Get("a"); got.State != model.StateQueued {
 		t.Errorf("job = %+v", got)
 	}
 }
 
-func TestCheckMode(t *testing.T) {
-	s, _ := open(t)
-	if err := s.CheckMode("auto"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CheckMode("auto"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CheckMode("manual"); err == nil || !strings.Contains(err.Error(), "mode switch") {
-		t.Errorf("a changed mode must be refused: %v", err)
-	}
-}
-
-func TestSourceLifecycle(t *testing.T) {
-	s, _ := open(t)
+func (x suite) TestSourceLifecycle(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
 	if err := s.AddSource("a.mkv", 10, 20, true); err != nil {
 		t.Fatal(err)
 	}
@@ -377,38 +400,38 @@ func TestSourceLifecycle(t *testing.T) {
 	if err := s.RenameSource("a.mkv", "b.mkv"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Source("a.mkv"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Source("a.mkv"); !errors.Is(err, model.ErrNotFound) {
 		t.Errorf("old path: %v", err)
 	}
 	if rev, err := s.BumpRevision("b.mkv"); err != nil || rev != 1 {
 		t.Errorf("BumpRevision = %d, %v", rev, err)
 	}
-	if _, err := s.BumpRevision("missing.mkv"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.BumpRevision("missing.mkv"); !errors.Is(err, model.ErrNotFound) {
 		t.Errorf("BumpRevision missing: %v", err)
 	}
 }
 
-func addSized(t *testing.T, s *Store, id string, size int64) {
+func addSized(t *testing.T, s database.Store, id string, size int64) {
 	t.Helper()
-	if _, err := s.Enqueue(&Job{ID: id, Path: id, OutputPath: id, SourceSize: size, Priority: PriorityBackfill}); err != nil {
+	if _, err := s.Enqueue(&model.Job{ID: id, Path: id, OutputPath: id, SourceSize: size, Priority: model.PriorityBackfill}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestBackfillPausedIsNotClaimed(t *testing.T) {
-	s, _ := open(t)
+func (x suite) TestBackfillPausedIsNotClaimed(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
 	addSized(t, s, "a", 1)
 	if j := claim(t, s); j != nil {
 		t.Fatalf("a job claimed without backfill started: %+v", j)
 	}
-	if err := s.SetMeta("backfill_active", "1"); err != nil {
+	if err := s.SetMeta(model.MetaBackfillActive, "1"); err != nil {
 		t.Fatal(err)
 	}
 	if j := claim(t, s); j == nil {
 		t.Fatal("not claimed once active")
 	}
 	addSized(t, s, "b", 1)
-	if err := s.SetMeta("backfill_active", "0"); err != nil {
+	if err := s.SetMeta(model.MetaBackfillActive, "0"); err != nil {
 		t.Fatal(err)
 	}
 	if j := claim(t, s); j != nil {
@@ -416,10 +439,9 @@ func TestBackfillPausedIsNotClaimed(t *testing.T) {
 	}
 }
 
-func TestBackfillBudget(t *testing.T) {
-	s, c := open(t)
-	s.BackfillBudget = 100
-	if err := s.SetMeta("backfill_active", "1"); err != nil {
+func (x suite) TestBackfillBudget(t *testing.T) {
+	s, c := x.open(t, database.Options{BackfillBudget: 100})
+	if err := s.SetMeta(model.MetaBackfillActive, "1"); err != nil {
 		t.Fatal(err)
 	}
 	addSized(t, s, "a", 60)
@@ -441,7 +463,7 @@ func TestBackfillBudget(t *testing.T) {
 		t.Errorf("used = %d, %v", used, err)
 	}
 
-	addJob(t, s, "new", PriorityNew)
+	addJob(t, s, "new", model.PriorityNew)
 	if j := claim(t, s); j == nil || j.ID != "new" {
 		t.Errorf("the budget must never hold back new titles: %+v", j)
 	}
@@ -452,10 +474,9 @@ func TestBackfillBudget(t *testing.T) {
 	}
 }
 
-func TestBackfillOversizedTitleRunsOnFreshDay(t *testing.T) {
-	s, _ := open(t)
-	s.BackfillBudget = 100
-	if err := s.SetMeta("backfill_active", "1"); err != nil {
+func (x suite) TestBackfillOversizedTitleRunsOnFreshDay(t *testing.T) {
+	s, _ := x.open(t, database.Options{BackfillBudget: 100})
+	if err := s.SetMeta(model.MetaBackfillActive, "1"); err != nil {
 		t.Fatal(err)
 	}
 	addSized(t, s, "huge", 500)
@@ -464,32 +485,28 @@ func TestBackfillOversizedTitleRunsOnFreshDay(t *testing.T) {
 	}
 }
 
-func TestCancelStaleProfile(t *testing.T) {
-	s, _ := open(t)
+func (x suite) TestCancelStaleProfile(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
 	for id, profile := range map[string]string{"old": "p1", "cur": "p2"} {
-		if _, err := s.Enqueue(&Job{ID: id, Path: id, OutputPath: id, Profile: profile}); err != nil {
+		if _, err := s.Enqueue(&model.Job{ID: id, Path: id, OutputPath: id, Profile: profile}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if n, err := s.CancelStaleProfile("p2"); err != nil || n != 1 {
 		t.Fatalf("CancelStaleProfile = %d, %v", n, err)
 	}
-	if j, _ := s.Get("cur"); j.State != StateQueued {
+	if j, _ := s.Get("cur"); j.State != model.StateQueued {
 		t.Errorf("current job = %+v", j)
 	}
 }
 
 // Several workers claim at once, so no job may go to two of them.
-func TestConcurrentClaimsNeverShareAJob(t *testing.T) {
-	s, err := Open(filepath.Join(t.TempDir(), "q.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
+func (x suite) TestConcurrentClaimsNeverShareAJob(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
 	const jobs = 40
 	for i := range jobs {
 		id := fmt.Sprintf("job%d", i)
-		if _, err := s.Enqueue(&Job{ID: id, Path: id + ".mkv", OutputPath: id + ".mp4", Priority: PriorityNew}); err != nil {
+		if _, err := s.Enqueue(&model.Job{ID: id, Path: id + ".mkv", OutputPath: id + ".mp4", Priority: model.PriorityNew}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -525,29 +542,8 @@ func TestConcurrentClaimsNeverShareAJob(t *testing.T) {
 	}
 }
 
-func TestMigrateRunsOnceAndInOrder(t *testing.T) {
-	s, _ := open(t)
-	steps := []string{`CREATE TABLE m1 (x INTEGER)`, `ALTER TABLE m1 ADD COLUMN y INTEGER`}
-	if err := migrate(s.db, steps[:1]); err != nil {
-		t.Fatal(err)
-	}
-	// Running a step twice would fail, so a pass proves only the new one ran.
-	if err := migrate(s.db, steps); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(s.db, steps); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec(`INSERT INTO m1 (x, y) VALUES (1, 2)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(s.db, steps[:1]); err == nil {
-		t.Error("an older program must refuse a newer database")
-	}
-}
-
-func TestSetEncodedNeedsATrackedSource(t *testing.T) {
-	s, _ := open(t)
+func (x suite) TestSetEncodedNeedsATrackedSource(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
 	if err := s.SetEncoded("gone.mkv", 1, 2, "p", "h", 3); err == nil {
 		t.Error("recording an encode for no source must fail")
 	}

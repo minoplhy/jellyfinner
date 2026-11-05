@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"jellyfinner/internal/edgerouter"
+	"jellyfinner/internal/model"
 	"jellyfinner/internal/pipeline"
-	"jellyfinner/internal/queue"
 )
 
 const (
@@ -21,7 +21,7 @@ const (
 
 // Pin orders a node to cache a finished encode.
 func (s *Service) Pin(sourcePath, node string) error {
-	n := s.Store.EdgeNode(node)
+	n := s.Nodes.Edge(node)
 	if n == nil {
 		return fmt.Errorf("unknown edge node %q", node)
 	}
@@ -39,17 +39,17 @@ func (s *Service) Pin(sourcePath, node string) error {
 		return err
 	}
 	for _, p := range existing {
-		if p.Node == node && p.SHA256 == src.EncodedSHA256 && p.State != queue.PlacementFailed {
+		if p.Node == node && p.SHA256 == src.EncodedSHA256 && p.State != model.PlacementFailed {
 			return fmt.Errorf("%s is already %s on %s", sourcePath, p.State, node)
 		}
 	}
 	if err := s.checkQuota(n, src.EncodedBytes); err != nil {
 		return err
 	}
-	return s.Store.AddPlacement(&queue.Placement{Node: node, SHA256: src.EncodedSHA256, Output: output, Size: src.EncodedBytes})
+	return s.Store.AddPlacement(&model.Placement{Node: node, SHA256: src.EncodedSHA256, Output: output, Size: src.EncodedBytes})
 }
 
-func (s *Service) checkQuota(n *queue.Node, size int64) error {
+func (s *Service) checkQuota(n *model.Node, size int64) error {
 	used, err := s.Store.NodeUsed(n.Name)
 	if err != nil {
 		return err
@@ -74,14 +74,14 @@ func (s *Service) UnpinOutput(output, node string, force bool) error {
 	}
 	found := false
 	for _, p := range placements {
-		if p.Node != node || p.State == queue.PlacementDeleting {
+		if p.Node != node || p.State == model.PlacementDeleting {
 			continue
 		}
 		found = true
-		if !force && p.LastPlayed != 0 && s.Store.Now().Unix()-p.LastPlayed < int64(recentPlay.Seconds()) {
+		if !force && p.LastPlayed != 0 && s.Now().Unix()-p.LastPlayed < int64(recentPlay.Seconds()) {
 			return fmt.Errorf("%s was played on %s recently, and a viewer's next seek would fail: use force to remove it", output, node)
 		}
-		if err := s.Store.SetPlacementState(node, p.SHA256, queue.PlacementDeleting, ""); err != nil {
+		if err := s.Store.SetPlacementState(node, p.SHA256, model.PlacementDeleting, ""); err != nil {
 			return err
 		}
 	}
@@ -98,7 +98,7 @@ func (s *Service) withdrawPlacements(output string) error {
 		return err
 	}
 	for _, p := range placements {
-		if err := s.Store.SetPlacementState(p.Node, p.SHA256, queue.PlacementDeleting, ""); err != nil {
+		if err := s.Store.SetPlacementState(p.Node, p.SHA256, model.PlacementDeleting, ""); err != nil {
 			return err
 		}
 	}
@@ -117,16 +117,16 @@ func (s *Service) refreshPlacements(output string, video pipeline.File) error {
 		if p.SHA256 == video.SHA256 {
 			continue
 		}
-		if p.State != queue.PlacementDeleting {
+		if p.State != model.PlacementDeleting {
 			nodes[p.Node] = true
 		}
-		if err := s.Store.SetPlacementState(p.Node, p.SHA256, queue.PlacementDeleting, ""); err != nil {
+		if err := s.Store.SetPlacementState(p.Node, p.SHA256, model.PlacementDeleting, ""); err != nil {
 			return err
 		}
 	}
 	var errs []error
 	for node := range nodes {
-		n := s.Store.EdgeNode(node)
+		n := s.Nodes.Edge(node)
 		if n == nil {
 			continue
 		}
@@ -134,14 +134,14 @@ func (s *Service) refreshPlacements(output string, video pipeline.File) error {
 			errs = append(errs, err)
 			continue
 		}
-		errs = append(errs, s.Store.AddPlacement(&queue.Placement{Node: node, SHA256: video.SHA256, Output: output, Size: video.Size}))
+		errs = append(errs, s.Store.AddPlacement(&model.Placement{Node: node, SHA256: video.SHA256, Output: output, Size: video.Size}))
 	}
 	return errors.Join(errs...)
 }
 
 func (s *Service) probeNodes(ctx context.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	for _, n := range s.Store.EdgeNodes() {
+	for _, n := range s.Nodes.Edges() {
 		healthy := probe(ctx, client, strings.TrimSuffix(n.URL, "/")+"/health")
 		if err := s.Store.SetNodeHealth(n.Name, healthy); err != nil {
 			s.Log.Printf("node health %s: %v", n.Name, err)
@@ -174,16 +174,16 @@ type NodeRow struct {
 	URL        string
 	Quota      int64
 	Used       int64
-	Status     queue.NodeStatus
+	Status     model.NodeStatus
 	Online     bool
-	Placements []*queue.Placement
+	Placements []*model.Placement
 	Viewers    []string
 }
 
 // NodeRows summarises every edge node.
 func (s *Service) NodeRows() ([]NodeRow, error) {
 	var rows []NodeRow
-	for _, n := range s.Store.EdgeNodes() {
+	for _, n := range s.Nodes.Edges() {
 		row := NodeRow{Name: n.Name, URL: n.URL, Quota: n.QuotaBytes}
 		var err error
 		if row.Used, err = s.Store.NodeUsed(n.Name); err != nil {
@@ -195,7 +195,7 @@ func (s *Service) NodeRows() ([]NodeRow, error) {
 		if row.Placements, err = s.Store.NodePlacements(n.Name); err != nil {
 			return nil, err
 		}
-		row.Online = edgerouter.Servable(row.Status, s.Store.Now())
+		row.Online = edgerouter.Servable(row.Status, s.Now())
 		for user, node := range s.Cfg.EdgeViewers {
 			if node == n.Name {
 				row.Viewers = append(row.Viewers, user)

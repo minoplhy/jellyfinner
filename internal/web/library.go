@@ -22,7 +22,7 @@ func (s *Server) libraryData(csrf, search string) (libraryData, error) {
 		return libraryData{}, err
 	}
 	var nodes []string
-	for _, n := range s.svc.Store.EdgeNodes() {
+	for _, n := range s.svc.Nodes.Edges() {
 		nodes = append(nodes, n.Name)
 	}
 	return libraryData{CSRF: csrf, Nodes: nodes, Search: search, Rows: rows, Total: total}, nil

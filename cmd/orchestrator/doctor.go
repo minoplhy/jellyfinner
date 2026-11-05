@@ -13,7 +13,8 @@ import (
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/doctor"
 	"jellyfinner/internal/jellyfin"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
+	"jellyfinner/internal/orchestrator"
 )
 
 const minFreeGB = 20
@@ -38,11 +39,11 @@ func runDoctor(envFile string) error {
 		r.Check("control API address", config.CheckListenAddr(cfg.ControlAddr))
 	}
 
-	store, err := queue.Open(cfg.DBPath)
+	store, err := openStore(cfg)
 	r.Check("database at "+cfg.DBPath, err)
 	if err == nil {
 		defer store.Close()
-		r.Check("database mode matches ENCODE_MODE", store.CheckMode(string(cfg.Mode)))
+		r.Check("database mode matches ENCODE_MODE", orchestrator.CheckMode(store, string(cfg.Mode)))
 		nodes, err := store.LoadNodes()
 		r.Check("node list", err)
 		if err == nil && len(nodes) == 0 {
@@ -97,7 +98,7 @@ func webhookUnreachable(cfg *config.Config) bool {
 	return err == nil && addr.IsLoopback()
 }
 
-func viewerNodes(r *doctor.Report, cfg *config.Config, nodes []queue.Node) {
+func viewerNodes(r *doctor.Report, cfg *config.Config, nodes []model.Node) {
 	known := map[string]bool{}
 	for _, n := range nodes {
 		known[n.Name] = n.Edge()

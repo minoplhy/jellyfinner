@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"jellyfinner/internal/encode"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 // library writes n existing titles, oldest first, and records them as backlog.
@@ -65,7 +65,7 @@ func TestBackfillFeedsNewestFirstInAWindow(t *testing.T) {
 	}
 	for _, name := range []string{"t5.mkv", "t4.mkv", "t3.mkv"} {
 		j := f.queued(name)
-		if j == nil || j.Priority != queue.PriorityBackfill {
+		if j == nil || j.Priority != model.PriorityBackfill {
 			t.Errorf("%s: %+v", name, j)
 		}
 	}
@@ -162,7 +162,7 @@ func TestProfileChangeRebuildsThroughBackfill(t *testing.T) {
 	}
 	f.scan()
 	j := f.queued("a.mkv")
-	if j == nil || j.Priority != queue.PriorityBackfill {
+	if j == nil || j.Priority != model.PriorityBackfill {
 		t.Fatalf("job = %+v", j)
 	}
 	if got := f.svc.WorkerJob(j); got.Profile.MaxHeight != 720 {

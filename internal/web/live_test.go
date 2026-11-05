@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"jellyfinner/internal/config"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 // hx sends a request the way htmx does, from a page at current.
@@ -212,7 +212,7 @@ func TestAddRotateAndRemoveNodesFromTheWeb(t *testing.T) {
 	if m == nil {
 		t.Fatalf("no token shown: %s", body)
 	}
-	if n := f.store.NodeByToken(m[1]); n == nil || n.Name != "worker2" || n.Edge() {
+	if n := f.svc.Nodes.ByToken(m[1]); n == nil || n.Name != "worker2" || n.Edge() {
 		t.Errorf("the shown token must work: %+v", n)
 	}
 
@@ -221,7 +221,7 @@ func TestAddRotateAndRemoveNodesFromTheWeb(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, "EDGE_SIGNING_KEY: ") {
 		t.Fatalf("add edge = %d: %s", code, body)
 	}
-	if n := f.store.EdgeNode("edge9"); n == nil || n.URL != "https://edge9.example.com" || n.QuotaBytes != 50e9 {
+	if n := f.svc.Nodes.Edge("edge9"); n == nil || n.URL != "https://edge9.example.com" || n.QuotaBytes != 50e9 {
 		t.Errorf("edge = %+v", n)
 	}
 
@@ -245,14 +245,14 @@ func TestAddRotateAndRemoveNodesFromTheWeb(t *testing.T) {
 	if code != http.StatusOK || m2 == nil || m2[1] == m[1] || strings.Contains(body, "ORCHESTRATOR_URL") {
 		t.Fatalf("rotate = %d: %s", code, body)
 	}
-	if f.store.NodeByToken(m[1]) != nil || f.store.NodeByToken(m2[1]) == nil {
+	if f.svc.Nodes.ByToken(m[1]) != nil || f.svc.Nodes.ByToken(m2[1]) == nil {
 		t.Error("rotate must replace the token")
 	}
 
 	if got, _ := f.post(c, "/nodes/worker2/delete", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
 		t.Errorf("delete = %d", got)
 	}
-	if f.store.NodeByToken(m2[1]) != nil {
+	if f.svc.Nodes.ByToken(m2[1]) != nil {
 		t.Error("a removed node's token must stop working")
 	}
 	if got, _ := f.post(c, "/nodes/nope/delete", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
@@ -312,7 +312,7 @@ func TestJobPagePollsUntilTheJobEnds(t *testing.T) {
 	if got, _ := f.get(c, "/jobs/nope/log"); got != http.StatusNotFound {
 		t.Errorf("unknown log = %d", got)
 	}
-	if j, _ := f.store.Get(id); j.State != queue.StateFailed {
+	if j, _ := f.store.Get(id); j.State != model.StateFailed {
 		t.Errorf("state = %s", j.State)
 	}
 }

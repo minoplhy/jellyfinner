@@ -30,7 +30,7 @@ const (
 // fill a long path that one TCP stream cannot, and every transfer resumes.
 // The lease limits it to the current job.
 type API struct {
-	Client  *control.Client
+	Client  control.API
 	Lease   string
 	Streams int
 

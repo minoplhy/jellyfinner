@@ -9,12 +9,12 @@ import (
 	"strconv"
 	"strings"
 
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 // queueStates are the states the queue can be filtered by, in tab order.
-var queueStates = []string{queue.StateQueued, queue.StateRunning, queue.StatePublishing,
-	queue.StateFailed, queue.StateDone, queue.StateCancelled}
+var queueStates = []string{model.StateQueued, model.StateRunning, model.StatePublishing,
+	model.StateFailed, model.StateDone, model.StateCancelled}
 
 // queueFilter is the queue page's query: ?state=&node=&q=&page=.
 type queueFilter struct {
@@ -69,7 +69,7 @@ type queueData struct {
 	Filter queueFilter
 	Query  template.URL // the current filter, for polling
 	Tabs   []tab
-	Jobs   []*queue.Job
+	Jobs   []*model.Job
 	Total  int
 	First  int
 	Last   int
@@ -79,7 +79,7 @@ type queueData struct {
 
 func (s *Server) queueData(csrf string, f queueFilter) (queueData, error) {
 	data := queueData{CSRF: csrf, Filter: f, Query: f.query(f.Page)}
-	jobs, total, err := s.svc.Store.ListFiltered(queue.JobFilter{State: f.State, Node: f.Node, Search: f.Search},
+	jobs, total, err := s.svc.Store.ListFiltered(model.JobFilter{State: f.State, Node: f.Node, Search: f.Search},
 		queueRows, (f.Page-1)*queueRows)
 	if err != nil {
 		return data, err
@@ -147,13 +147,13 @@ func withQuery(q string) string {
 // jobData is the job page, and the fragment that refreshes it.
 type jobData struct {
 	CSRF string
-	Job  *queue.Job
+	Job  *model.Job
 	Live bool // the job may still change, so the page polls
 }
 
 func (s *Server) loadJob(w http.ResponseWriter, r *http.Request, csrf string) (jobData, bool) {
 	j, err := s.svc.Store.Get(r.PathValue("id"))
-	if errors.Is(err, queue.ErrNotFound) {
+	if errors.Is(err, model.ErrNotFound) {
 		http.NotFound(w, r)
 		return jobData{}, false
 	}
@@ -161,7 +161,7 @@ func (s *Server) loadJob(w http.ResponseWriter, r *http.Request, csrf string) (j
 		s.fail(w, err)
 		return jobData{}, false
 	}
-	live := j.State == queue.StateQueued || j.State == queue.StateRunning || j.State == queue.StatePublishing
+	live := j.State == model.StateQueued || j.State == model.StateRunning || j.State == model.StatePublishing
 	return jobData{CSRF: csrf, Job: j, Live: live}, true
 }
 

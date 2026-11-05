@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"jellyfinner/internal/control"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 const (
@@ -24,14 +24,14 @@ const (
 
 // leasedJob returns the job only while the calling node holds its lease, so a
 // worker can reach the source and output of its current job and nothing else.
-func (s *Server) leasedJob(w http.ResponseWriter, r *http.Request) (*queue.Job, bool) {
+func (s *Server) leasedJob(w http.ResponseWriter, r *http.Request) (*model.Job, bool) {
 	j, err := s.store.Get(r.PathValue("id"))
-	if err != nil && !errors.Is(err, queue.ErrNotFound) {
+	if err != nil && !errors.Is(err, model.ErrNotFound) {
 		s.fail(w, err)
 		return nil, false
 	}
 	lease := r.Header.Get(control.LeaseHeader)
-	if err != nil || j.State != queue.StateRunning || j.Node != nodeName(r) || lease == "" ||
+	if err != nil || j.State != model.StateRunning || j.Node != nodeName(r) || lease == "" ||
 		subtle.ConstantTimeCompare([]byte(lease), []byte(j.LeaseID)) != 1 {
 		http.Error(w, "lease lost", http.StatusConflict)
 		return nil, false
@@ -81,7 +81,7 @@ func (s *Server) jobSource(w http.ResponseWriter, r *http.Request) {
 
 // uploadPath is the one place a job's files may go. Names follow the same rule
 // as the manifest check in the publish step.
-func (s *Server) uploadPath(j *queue.Job, name string) (string, bool) {
+func (s *Server) uploadPath(j *model.Job, name string) (string, bool) {
 	if name == "" || name == "." || name == ".." || name != filepath.Base(name) || strings.ContainsAny(name, `/\`) {
 		return "", false
 	}

@@ -6,7 +6,7 @@ import (
 	"sort"
 
 	"jellyfinner/internal/config"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 // backfillWindow is how many backfill jobs sit in the queue at once. Feeding a
@@ -21,11 +21,11 @@ func (s *Service) SetBackfill(active bool) error {
 	value := "0"
 	if active {
 		value = "1"
-		if err := s.Store.SetMeta("backfill_finished", ""); err != nil {
+		if err := s.Store.SetMeta(model.MetaBackfillFinished, ""); err != nil {
 			return err
 		}
 	}
-	return s.Store.SetMeta("backfill_active", value)
+	return s.Store.SetMeta(model.MetaBackfillActive, value)
 }
 
 // BackfillStatus summarises the work left.
@@ -38,7 +38,7 @@ type BackfillStatus struct {
 	UsedToday      int64
 }
 
-func (s *Service) needsBackfill(src *queue.Source) bool {
+func (s *Service) needsBackfill(src *model.Source) bool {
 	if src.MissingSince != 0 {
 		return false
 	}
@@ -50,7 +50,7 @@ func (s *Service) needsBackfill(src *queue.Source) bool {
 
 // backfillPlan lists sources still needing work, newest first, and classifies
 // any job each already has.
-func (s *Service) backfillPlan() (todo []*queue.Source, st BackfillStatus, err error) {
+func (s *Service) backfillPlan() (todo []*model.Source, st BackfillStatus, err error) {
 	sources, err := s.Store.Sources()
 	if err != nil {
 		return nil, st, err
@@ -63,14 +63,14 @@ func (s *Service) backfillPlan() (todo []*queue.Source, st BackfillStatus, err e
 		if !s.needsBackfill(src) {
 			continue
 		}
-		switch states[s.newJob(src, queue.PriorityBackfill).ID] {
+		switch states[s.newJob(src, model.PriorityBackfill).ID] {
 		case "":
 			todo = append(todo, src)
 			st.Remaining++
 			st.RemainingBytes += src.Size
-		case queue.StateFailed, queue.StateCancelled:
+		case model.StateFailed, model.StateCancelled:
 			st.Failed++
-		case queue.StateDone:
+		case model.StateDone:
 		default:
 			st.InProgress++
 		}
@@ -85,7 +85,7 @@ func (s *Service) BackfillStatus() (BackfillStatus, error) {
 	if err != nil {
 		return st, err
 	}
-	active, err := s.Store.Meta("backfill_active")
+	active, err := s.Store.Meta(model.MetaBackfillActive)
 	if err != nil {
 		return st, err
 	}
@@ -98,7 +98,7 @@ func (s *Service) feedBackfill(ctx context.Context) error {
 	if s.Cfg.Mode != config.ModeAuto {
 		return nil
 	}
-	active, err := s.Store.Meta("backfill_active")
+	active, err := s.Store.Meta(model.MetaBackfillActive)
 	if err != nil || active != "1" {
 		return err
 	}
@@ -107,18 +107,18 @@ func (s *Service) feedBackfill(ctx context.Context) error {
 		return err
 	}
 	for i := 0; i < len(todo) && st.InProgress+i < backfillWindow; i++ {
-		if _, err := s.Store.Enqueue(s.newJob(todo[i], queue.PriorityBackfill)); err != nil {
+		if _, err := s.Store.Enqueue(s.newJob(todo[i], model.PriorityBackfill)); err != nil {
 			return err
 		}
 	}
 	if len(todo) > 0 || st.InProgress > 0 {
 		return nil
 	}
-	finished, err := s.Store.Meta("backfill_finished")
+	finished, err := s.Store.Meta(model.MetaBackfillFinished)
 	if err != nil || finished == "1" {
 		return err
 	}
-	if err := s.Store.SetMeta("backfill_finished", "1"); err != nil {
+	if err := s.Store.SetMeta(model.MetaBackfillFinished, "1"); err != nil {
 		return err
 	}
 	message := "Backfill finished, ready for cutover."

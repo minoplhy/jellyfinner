@@ -14,7 +14,7 @@ import (
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/edgerouter"
 	"jellyfinner/internal/jellyfin"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/nodes"
 )
 
 // router runs in its own process, in front of Jellyfin, and sends direct
@@ -33,15 +33,16 @@ func router(envFile string) error {
 	if err != nil {
 		return err
 	}
-	store, err := queue.Open(cfg.DBPath)
+	store, err := openStore(cfg)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
+	registry := nodes.New(store, nil)
 	for user, node := range cfg.EdgeViewers {
-		if store.EdgeNode(node) == nil {
+		if registry.Edge(node) == nil {
 			logger.Printf("EDGE_VIEWERS sends %s to %s, which is not an edge node yet, so they stay on the origin", user, node)
 		}
 	}

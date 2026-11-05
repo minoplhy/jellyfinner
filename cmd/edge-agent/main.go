@@ -94,7 +94,7 @@ func runDoctor(ctx context.Context, args []string) error {
 	return r.Done()
 }
 
-func checkNode(ctx context.Context, r *doctor.Report, client *control.Client) {
+func checkNode(ctx context.Context, r *doctor.Report, client control.API) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	me, err := client.WhoAmI(ctx)

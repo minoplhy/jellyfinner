@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"jellyfinner/internal/control"
+	"jellyfinner/internal/control/controltest"
 )
 
 type fakeClient struct {
+	controltest.Unimplemented
 	mu     sync.Mutex
 	orders []control.EdgeOrder
 	acks   []control.EdgeAck

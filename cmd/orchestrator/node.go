@@ -8,9 +8,9 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"jellyfinner/internal/database"
 	"jellyfinner/internal/notify"
 	"jellyfinner/internal/orchestrator"
-	"jellyfinner/internal/queue"
 )
 
 // nodeCommand changes the nodes table. serve and the router pick up a change
@@ -37,7 +37,7 @@ func nodeCommand(envFile string, args []string) error {
 	case "add":
 		return addNode(svc, name, rest[1:])
 	case "remove":
-		return store.RemoveNode(name)
+		return svc.Nodes.Remove(name)
 	case "rotate":
 		token, err := svc.RotateNodeToken(name)
 		if err != nil {
@@ -77,7 +77,7 @@ func addNode(svc *orchestrator.Service, name string, args []string) error {
 	return nil
 }
 
-func listNodes(store *queue.Store) error {
+func listNodes(store database.Store) error {
 	nodes, err := store.LoadNodes()
 	if err != nil {
 		return err

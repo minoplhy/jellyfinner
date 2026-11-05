@@ -14,3 +14,8 @@ type Transfer interface {
 	Pull(ctx context.Context, j *job.Job, local string) error
 	Push(ctx context.Context, j *job.Job, local, name string) error
 }
+
+var (
+	_ Transfer = (*API)(nil)
+	_ Transfer = (*Rclone)(nil)
+)

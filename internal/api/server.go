@@ -15,8 +15,10 @@ import (
 
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/control"
+	"jellyfinner/internal/database"
 	"jellyfinner/internal/job"
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
+	"jellyfinner/internal/nodes"
 )
 
 const (
@@ -30,9 +32,9 @@ type contextKey string
 
 // Hooks connect the API to the rest of the orchestrator.
 type Hooks struct {
-	WorkerJob func(*queue.Job) *job.Job
+	WorkerJob func(*model.Job) *job.Job
 	Completed func()
-	Failed    func(*queue.Job)
+	Failed    func(*model.Job)
 	// EdgeFailed reports a copy a node no longer holds or could not fetch.
 	EdgeFailed func(node, sha256, reason string)
 }
@@ -40,9 +42,12 @@ type Hooks struct {
 // Server handles control requests.
 type Server struct {
 	cfg   *config.Config
-	store *queue.Store
+	store database.Store
+	nodes *nodes.Registry
 	hooks Hooks
 	log   *log.Logger
+	// Now is the clock, replaceable in tests.
+	Now func() time.Time
 
 	mu       sync.Mutex
 	failures map[netip.Addr]*failure
@@ -54,9 +59,11 @@ type failure struct {
 	since time.Time
 }
 
-// New returns a Server.
-func New(cfg *config.Config, store *queue.Store, hooks Hooks, logger *log.Logger) *Server {
-	return &Server{cfg: cfg, store: store, hooks: hooks, log: logger, failures: map[netip.Addr]*failure{}, seen: map[string]time.Time{}}
+// New returns a Server. reg should be the registry the rest of the process
+// writes through, so a revoked node loses access at once.
+func New(cfg *config.Config, store database.Store, reg *nodes.Registry, hooks Hooks, logger *log.Logger) *Server {
+	return &Server{cfg: cfg, store: store, nodes: reg, hooks: hooks, log: logger, Now: time.Now,
+		failures: map[netip.Addr]*failure{}, seen: map[string]time.Time{}}
 }
 
 // Handler returns the routes behind authentication.
@@ -87,7 +94,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		node := s.store.NodeByToken(token)
+		node := s.nodes.ByToken(token)
 		if node == nil {
 			s.recordFailure(addr)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -112,9 +119,9 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 // whoami lets a node test its token without changing anything, because claiming
 // a job to find out could take real work.
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
-	kind := queue.NodeWorker
-	if s.store.EdgeNode(nodeName(r)) != nil {
-		kind = queue.NodeEdge
+	kind := model.NodeWorker
+	if s.nodes.Edge(nodeName(r)) != nil {
+		kind = model.NodeEdge
 	}
 	writeJSON(w, control.WhoAmIResponse{Name: nodeName(r), Kind: kind})
 }
@@ -122,7 +129,7 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 func (s *Server) markSeen(node string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.seen[node] = s.store.Now()
+	s.seen[node] = s.Now()
 }
 
 // LastSeen returns when each node last made an authenticated call.
@@ -136,7 +143,7 @@ func (s *Server) LastSeen() map[string]time.Time {
 	return out
 }
 
-func allowed(n *queue.Node, addr netip.Addr) bool {
+func allowed(n *model.Node, addr netip.Addr) bool {
 	if len(n.Allow) == 0 {
 		return true
 	}
@@ -155,7 +162,7 @@ func (s *Server) limited(addr netip.Addr) bool {
 	if f == nil {
 		return false
 	}
-	if s.store.Now().Sub(f.since) > authWindow {
+	if s.Now().Sub(f.since) > authWindow {
 		delete(s.failures, addr)
 		return false
 	}
@@ -167,7 +174,7 @@ func (s *Server) recordFailure(addr netip.Addr) {
 	defer s.mu.Unlock()
 	f := s.failures[addr]
 	if f == nil {
-		s.failures[addr] = &failure{count: 1, since: s.store.Now()}
+		s.failures[addr] = &failure{count: 1, since: s.Now()}
 		return
 	}
 	f.count++
@@ -241,7 +248,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
-	if errors.Is(err, queue.ErrLeaseLost) {
+	if errors.Is(err, model.ErrLeaseLost) {
 		http.Error(w, "lease lost", http.StatusConflict)
 		return
 	}

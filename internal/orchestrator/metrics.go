@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sort"
 
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 // MetricsHandler serves Prometheus text format.
@@ -38,7 +38,7 @@ func (s *Service) MetricsHandler() http.Handler {
 }
 
 func sortedStates(counts map[string]int) []string {
-	all := []string{queue.StateQueued, queue.StateRunning, queue.StatePublishing, queue.StateDone, queue.StateFailed, queue.StateCancelled}
+	all := []string{model.StateQueued, model.StateRunning, model.StatePublishing, model.StateDone, model.StateFailed, model.StateCancelled}
 	for state := range counts {
 		known := false
 		for _, a := range all {

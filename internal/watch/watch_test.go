@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 func write(t *testing.T, root, rel string) {
@@ -67,8 +67,8 @@ func TestScanUnreadableDirFails(t *testing.T) {
 	}
 }
 
-func src(path string, size, mtime int64) *queue.Source {
-	return &queue.Source{Path: path, Size: size, MtimeNS: mtime}
+func src(path string, size, mtime int64) *model.Source {
+	return &model.Source{Path: path, Size: size, MtimeNS: mtime}
 }
 
 func TestClassify(t *testing.T) {
@@ -76,7 +76,7 @@ func TestClassify(t *testing.T) {
 	away := src("away.mkv", 8, 8)
 	away.MissingSince = 100
 	moved := src("old/name.mkv", 5, 5)
-	tracked := []*queue.Source{src("same.mkv", 1, 1), src("edit.mkv", 2, 2), gone, away, moved}
+	tracked := []*model.Source{src("same.mkv", 1, 1), src("edit.mkv", 2, 2), gone, away, moved}
 
 	c := Classify(tracked, map[string]File{
 		"same.mkv":     {1, 1},
@@ -106,12 +106,12 @@ func TestClassify(t *testing.T) {
 func TestClassifyAmbiguousRenameIsNotGuessed(t *testing.T) {
 	one, two := src("a.mkv", 5, 5), src("b.mkv", 5, 5)
 
-	c := Classify([]*queue.Source{one, two}, map[string]File{"c.mkv": {5, 5}})
+	c := Classify([]*model.Source{one, two}, map[string]File{"c.mkv": {5, 5}})
 	if len(c.Renamed) != 0 || len(c.Missing) != 2 || len(c.New) != 1 {
 		t.Errorf("two sources, one target: %+v", c)
 	}
 
-	c = Classify([]*queue.Source{one}, map[string]File{"c.mkv": {5, 5}, "d.mkv": {5, 5}})
+	c = Classify([]*model.Source{one}, map[string]File{"c.mkv": {5, 5}, "d.mkv": {5, 5}})
 	if len(c.Renamed) != 0 || len(c.Missing) != 1 || len(c.New) != 2 {
 		t.Errorf("one source, two targets: %+v", c)
 	}

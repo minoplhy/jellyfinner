@@ -106,7 +106,30 @@ GOFLAGS=-p=1 go build ./...
 GOFLAGS=-p=1 go test -p 1 ./...
 ```
 
-`worker` and `edge-agent` build as static binaries with `CGO_ENABLED=0`. Keep them free of the `queue` package, which pulls in SQLite.
+`worker` and `edge-agent` build as static binaries with `CGO_ENABLED=0`. Keep them free of `internal/database`, which pulls in SQLite.
+
+### Code layout
+
+The code is in layers. Each layer talks to the next one through an interface.
+
+| Layer | Packages | Rule |
+|---|---|---|
+| Records | `internal/model` | Plain types, states and errors. No storage code. |
+| Storage | `internal/database` (`Store` interface), `internal/database/sqlite` | Every SQL statement lives in a backend. Nothing else imports `database/sql` or a driver. |
+| Services | `internal/orchestrator`, `internal/nodes`, `internal/watch` | Rules and background work, through `database.Store`. |
+| Edges | `internal/api`, `internal/web`, `internal/edgerouter` | HTTP handlers that call services and `database.Store`. |
+| Outside systems | `jellyfin.API`, `control.API`, `transfer.Transfer`, `notify.Notifier`; ffmpeg in `internal/encode` | One interface per package, implemented by the real client. Tests embed `jellyfintest.Unimplemented` or `controltest.Unimplemented`. |
+| Wiring | `cmd/*` | The only place that picks a backend, through `openStore` in `cmd/orchestrator/store.go`. |
+
+To add a backend such as MariaDB:
+
+1. Create `internal/database/mysql`.
+2. Implement `database.Store` in it.
+3. Call `database.Register` from its `init`.
+4. Pass `dbtest.Run` in its tests.
+5. Choose it in `openStore`.
+
+`internal/archtest` fails the build if these rules are broken.
 
 ## Documents
 

@@ -16,9 +16,12 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
+	"jellyfinner/internal/database"
+	"jellyfinner/internal/jellyfin"
 	"jellyfinner/internal/job"
+	"jellyfinner/internal/model"
+	"jellyfinner/internal/nodes"
 	"jellyfinner/internal/notify"
-	"jellyfinner/internal/queue"
 	"jellyfinner/internal/stub"
 	"jellyfinner/internal/watch"
 )
@@ -28,14 +31,6 @@ const massDeleteMin = 5
 
 const reapInterval = 15 * time.Second
 
-// MediaServer is what the orchestrator needs from Jellyfin.
-type MediaServer interface {
-	Refresh(ctx context.Context) error
-	ItemPath(ctx context.Context, itemID string) (string, error)
-	ClearPlayed(ctx context.Context, itemID, userID string) error
-	SendMessage(ctx context.Context, sessionID, header, text string) error
-}
-
 // StubName is the master stub inside INCOMING_DIR, which shares a filesystem
 // with the library but is not one.
 const StubName = ".stub.mp4"
@@ -43,9 +38,11 @@ const StubName = ".stub.mp4"
 // Service holds the orchestrator's background work.
 type Service struct {
 	Cfg     *config.Config
-	Store   *queue.Store
+	Store   database.Store
+	Nodes   *nodes.Registry
+	Now     func() time.Time // the clock; the store should share it
 	Notify  notify.Notifier
-	Library MediaServer // nil when no Jellyfin URL is set
+	Library jellyfin.API // nil when no Jellyfin URL is set
 	Stub    stub.Master
 	Log     *log.Logger
 	Profile string
@@ -61,10 +58,11 @@ type Service struct {
 
 // New returns a Service. The profile hash goes into every job ID, so changing
 // the output profile produces new jobs rather than matching old ones.
-func New(cfg *config.Config, store *queue.Store, n notify.Notifier, library MediaServer, logger *log.Logger) *Service {
-	return &Service{
+func New(cfg *config.Config, store database.Store, n notify.Notifier, library jellyfin.API, logger *log.Logger) *Service {
+	s := &Service{
 		Cfg:        cfg,
 		Store:      store,
+		Now:        time.Now,
 		Notify:     n,
 		Library:    library,
 		Log:        logger,
@@ -73,6 +71,39 @@ func New(cfg *config.Config, store *queue.Store, n notify.Notifier, library Medi
 		publishNow: make(chan struct{}, 1),
 		scanNow:    make(chan struct{}, 1),
 	}
+	// Through a closure, so a clock swapped in later reaches the cache too.
+	s.Nodes = nodes.New(store, func() time.Time { return s.Now() })
+	return s
+}
+
+// CheckMode records the mode on first run and refuses a later change, because
+// changing a .env file alone must never start a backfill.
+func CheckMode(meta database.MetaStore, mode string) error {
+	stored, err := meta.Meta(model.MetaActiveMode)
+	if err != nil {
+		return err
+	}
+	if stored == "" {
+		return meta.SetMeta(model.MetaActiveMode, mode)
+	}
+	if stored != mode {
+		return fmt.Errorf("ENCODE_MODE is %q but this database runs %q: change it with an explicit mode switch", mode, stored)
+	}
+	return nil
+}
+
+// SourceByOutput finds the source that produces a library path.
+func (s *Service) SourceByOutput(output string) (*model.Source, error) {
+	sources, err := s.Store.Sources()
+	if err != nil {
+		return nil, err
+	}
+	for _, src := range sources {
+		if OutputPath(src.Path) == output {
+			return src, nil
+		}
+	}
+	return nil, model.ErrNotFound
 }
 
 // Run blocks until ctx ends.
@@ -156,12 +187,12 @@ func (s *Service) clearAbandonedUploads() {
 		}
 		j, err := s.Store.Get(e.Name())
 		if err != nil {
-			if !errors.Is(err, queue.ErrNotFound) {
+			if !errors.Is(err, model.ErrNotFound) {
 				s.Log.Printf("incoming %s: %v", e.Name(), err)
 			}
 			continue
 		}
-		if j.State != queue.StateFailed && j.State != queue.StateCancelled {
+		if j.State != model.StateFailed && j.State != model.StateCancelled {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(s.Cfg.IncomingDir, e.Name())); err != nil {
@@ -171,7 +202,7 @@ func (s *Service) clearAbandonedUploads() {
 }
 
 // JobFailed reports a job that has run out of attempts.
-func (s *Service) JobFailed(ctx context.Context, j *queue.Job) {
+func (s *Service) JobFailed(ctx context.Context, j *model.Job) {
 	message := fmt.Sprintf("Encode failed: %s (job %s, %d attempts). Last error: %s",
 		Title(j.Path), j.ID, j.Attempts, j.Error)
 	if s.Cfg.AdminURL != "" {
@@ -212,7 +243,7 @@ func (s *Service) ScanOnce(ctx context.Context) error {
 
 	// Files found by the very first scan are the existing library, not new
 	// arrivals. They wait as backlog rather than all starting at once.
-	scanned, err := s.Store.Meta("first_scan_done")
+	scanned, err := s.Store.Meta(model.MetaFirstScanDone)
 	if err != nil {
 		return err
 	}
@@ -264,7 +295,7 @@ func (s *Service) ScanOnce(ctx context.Context) error {
 		s.Log.Printf("first scan: %s is empty, waiting for files before recording the library", s.Cfg.OriginalsDir)
 	}
 	if firstScan && len(files) > 0 {
-		if err := s.Store.SetMeta("first_scan_done", "1"); err != nil {
+		if err := s.Store.SetMeta(model.MetaFirstScanDone, "1"); err != nil {
 			return err
 		}
 		if len(changes.New) > 0 && s.Cfg.Mode == config.ModeAuto {
@@ -294,8 +325,8 @@ func (s *Service) applyRename(r watch.Rename) error {
 	return s.Store.RenameSource(r.From.Path, r.To)
 }
 
-func (s *Service) handleMissing(ctx context.Context, missing []*queue.Source, tracked int) error {
-	now := s.Store.Now().Unix()
+func (s *Service) handleMissing(ctx context.Context, missing []*model.Source, tracked int) error {
+	now := s.Now().Unix()
 	for _, src := range missing {
 		if src.MissingSince == 0 {
 			src.MissingSince = now
@@ -335,7 +366,7 @@ func (s *Service) massive(changed, tracked int) bool {
 	return changed >= massDeleteMin && changed*100 > s.Cfg.MassDeletePercent*tracked
 }
 
-func (s *Service) removeSource(src *queue.Source) error {
+func (s *Service) removeSource(src *model.Source) error {
 	if _, err := s.Store.CancelForPath(src.Path, ""); err != nil {
 		return err
 	}
@@ -357,7 +388,7 @@ func (s *Service) removeSource(src *queue.Source) error {
 // outputOwnedByAnother finds a source that shares this one's output and has
 // the better claim to it, as x.mkv and x.avi both produce x.mp4. If neither was
 // encoded, what is there is a stub, which the other source still needs.
-func (s *Service) outputOwnedByAnother(src *queue.Source) (bool, error) {
+func (s *Service) outputOwnedByAnother(src *model.Source) (bool, error) {
 	sources, err := s.Store.Sources()
 	if err != nil {
 		return false, err
@@ -392,7 +423,7 @@ func (s *Service) queueStable() error {
 	if err != nil {
 		return err
 	}
-	now := s.Store.Now().Unix()
+	now := s.Now().Unix()
 	stable := int64(s.Cfg.StableFor.Seconds())
 	owners := map[string]string{}
 	for _, src := range sources {
@@ -427,7 +458,7 @@ func (s *Service) queueStable() error {
 		if src.Backlog && src.EncodedSize >= 0 {
 			continue
 		}
-		if _, err := s.Store.Enqueue(s.newJob(src, queue.PriorityNew)); err != nil {
+		if _, err := s.Store.Enqueue(s.newJob(src, model.PriorityNew)); err != nil {
 			return err
 		}
 	}
@@ -436,8 +467,8 @@ func (s *Service) queueStable() error {
 
 // ensureQueued makes sure a current job exists, reviving a cancelled one. A
 // failed job stays failed, because replaying a stub is not an operator's retry.
-func (s *Service) ensureQueued(src *queue.Source) (*queue.Job, error) {
-	j := s.newJob(src, queue.PriorityNew)
+func (s *Service) ensureQueued(src *model.Source) (*model.Job, error) {
+	j := s.newJob(src, model.PriorityNew)
 	created, err := s.Store.Enqueue(j)
 	if err != nil {
 		return nil, err
@@ -449,7 +480,7 @@ func (s *Service) ensureQueued(src *queue.Source) (*queue.Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	if existing.State == queue.StateCancelled {
+	if existing.State == model.StateCancelled {
 		if err := s.Store.Retry(j.ID); err != nil {
 			return nil, err
 		}
@@ -458,8 +489,8 @@ func (s *Service) ensureQueued(src *queue.Source) (*queue.Job, error) {
 	return existing, nil
 }
 
-func (s *Service) newJob(src *queue.Source, priority int) *queue.Job {
-	return &queue.Job{
+func (s *Service) newJob(src *model.Source, priority int) *model.Job {
+	return &model.Job{
 		ID:          job.ComputeID(src.Path, src.Size, src.MtimeNS, s.Profile, src.Revision),
 		Path:        src.Path,
 		OutputPath:  OutputPath(src.Path),
@@ -480,12 +511,12 @@ func (s *Service) Add(sourcePath string) (string, error) {
 	if src.Encoded() {
 		return "", fmt.Errorf("%s is already encoded, order a re-encode instead", sourcePath)
 	}
-	j := s.newJob(src, queue.PriorityNew)
+	j := s.newJob(src, model.PriorityNew)
 	existing, err := s.Store.Get(j.ID)
-	if err == nil && existing.State != queue.StateCancelled {
+	if err == nil && existing.State != model.StateCancelled {
 		return "", fmt.Errorf("job %s is already %s", j.ID, existing.State)
 	}
-	if err != nil && !errors.Is(err, queue.ErrNotFound) {
+	if err != nil && !errors.Is(err, model.ErrNotFound) {
 		return "", err
 	}
 	queued, err := s.ensureQueued(src)
@@ -522,7 +553,7 @@ func (s *Service) Reencode(sourcePath string, opts ReencodeOptions) (string, err
 	if src.Revision, err = s.Store.BumpRevision(sourcePath); err != nil {
 		return "", err
 	}
-	j := s.newJob(src, queue.PriorityNew)
+	j := s.newJob(src, model.PriorityNew)
 	j.Reason = opts.Reason
 	j.ForceEncode = opts.ForceEncode
 	j.Software = opts.Software
@@ -533,7 +564,7 @@ func (s *Service) Reencode(sourcePath string, opts ReencodeOptions) (string, err
 }
 
 // WorkerJob builds the job a worker receives, with paths as it sees them.
-func (s *Service) WorkerJob(q *queue.Job) *job.Job {
+func (s *Service) WorkerJob(q *model.Job) *job.Job {
 	// Without rclone paths the worker transfers through the control API, and
 	// the orchestrator picks the files from the job's lease, not these values.
 	source, incoming := q.Path, "control-api"

@@ -20,11 +20,13 @@ import (
 
 	"jellyfinner/internal/api"
 	"jellyfinner/internal/config"
+	"jellyfinner/internal/database"
 	"jellyfinner/internal/jellyfin"
+	"jellyfinner/internal/model"
+	"jellyfinner/internal/nodes"
 	"jellyfinner/internal/notify"
 	"jellyfinner/internal/orchestrator"
 	"jellyfinner/internal/prepare"
-	"jellyfinner/internal/queue"
 	"jellyfinner/internal/web"
 )
 
@@ -115,18 +117,16 @@ func health(envFile string, args []string) error {
 	return conn.Close()
 }
 
-func open(envFile string) (*config.Config, *queue.Store, error) {
+func open(envFile string) (*config.Config, database.Store, error) {
 	cfg, err := config.Load(envFile)
 	if err != nil {
 		return nil, nil, err
 	}
-	store, err := queue.Open(cfg.DBPath)
+	store, err := openStore(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	store.RetryDelay = cfg.RetryDelay
-	store.BackfillBudget = cfg.BackfillDailyBytes
-	if err := store.CheckMode(string(cfg.Mode)); err != nil {
+	if err := orchestrator.CheckMode(store, string(cfg.Mode)); err != nil {
 		store.Close()
 		return nil, nil, err
 	}
@@ -152,7 +152,7 @@ func serve(envFile string) error {
 		return err
 	}
 	defer release()
-	if cfg.EdgeTokenKey, err = store.EnsureSecret("edge_token_key"); err != nil {
+	if cfg.EdgeTokenKey, err = nodes.EnsureSecret(store, "edge_token_key"); err != nil {
 		return err
 	}
 	if err := cfg.CheckFilesystems(); err != nil {
@@ -169,7 +169,7 @@ func serve(envFile string) error {
 	defer stop()
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	var library orchestrator.MediaServer
+	var library jellyfin.API
 	if cfg.JellyfinURL != "" && cfg.JellyfinToken != "" {
 		library = jellyfin.New(cfg.JellyfinURL, cfg.JellyfinToken)
 	}
@@ -195,10 +195,10 @@ func serve(envFile string) error {
 		}
 	}()
 
-	control := api.New(cfg, store, api.Hooks{
+	control := api.New(cfg, store, svc.Nodes, api.Hooks{
 		WorkerJob: svc.WorkerJob,
 		Completed: svc.TriggerPublish,
-		Failed:    func(j *queue.Job) { svc.JobFailed(ctx, j) },
+		Failed:    func(j *model.Job) { svc.JobFailed(ctx, j) },
 		EdgeFailed: func(node, sha256, reason string) {
 			svc.EdgeCopyFailed(ctx, node, sha256, reason)
 		},
@@ -322,12 +322,12 @@ func switchMode(envFile string, args []string) error {
 		return fmt.Errorf("stop serve before switching: %w", err)
 	}
 	defer release()
-	store, err := queue.Open(cfg.DBPath)
+	store, err := openStore(cfg)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
-	current, err := store.Meta("active_mode")
+	current, err := store.Meta(model.MetaActiveMode)
 	if err != nil {
 		return err
 	}
@@ -487,7 +487,7 @@ func reencode(svc *orchestrator.Service, args []string) error {
 	return nil
 }
 
-func listJobs(store *queue.Store) error {
+func listJobs(store database.Store) error {
 	jobs, err := store.List(100)
 	if err != nil {
 		return err
@@ -496,7 +496,7 @@ func listJobs(store *queue.Store) error {
 	fmt.Fprintln(w, "JOB\tSTATE\tPRI\tTRY\tSTAGE\tPATH\tERROR")
 	for _, j := range jobs {
 		stage := j.Stage
-		if j.State == queue.StateRunning {
+		if j.State == model.StateRunning {
 			stage = fmt.Sprintf("%s %.0f%%", j.Stage, j.Fraction*100)
 		}
 		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\t%s\t%s\n", j.ID, j.State, j.Priority, j.Attempts, stage, j.Path, j.Error)

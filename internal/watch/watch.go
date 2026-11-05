@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 var videoExts = []string{
@@ -74,7 +74,7 @@ func isVideo(name string) bool {
 
 // Rename is a tracked source found again at a new path.
 type Rename struct {
-	From *queue.Source
+	From *model.Source
 	To   string
 }
 
@@ -84,16 +84,16 @@ type Changes struct {
 	Changed  []string
 	Returned []string // reappeared unchanged after going missing
 	Renamed  []Rename
-	Missing  []*queue.Source
+	Missing  []*model.Source
 }
 
 // Classify compares tracked sources with a scan. A missing source and a new
 // file with the same size and mtime are one rename, unless several candidates
 // make that ambiguous, in which case they stay a delete and an add.
-func Classify(tracked []*queue.Source, scan map[string]File) Changes {
+func Classify(tracked []*model.Source, scan map[string]File) Changes {
 	var c Changes
 	known := map[string]bool{}
-	var missing []*queue.Source
+	var missing []*model.Source
 	for _, src := range tracked {
 		known[src.Path] = true
 		f, ok := scan[src.Path]

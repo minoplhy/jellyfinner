@@ -1,9 +1,11 @@
-package queue
+package sqlite
 
 import (
 	"database/sql"
 	"errors"
 	"strconv"
+
+	"jellyfinner/internal/model"
 )
 
 // spendBudget decides whether a backfill job may start now. A pause stops
@@ -12,27 +14,27 @@ import (
 // budget may run on an unused day, or it would block the backfill forever.
 func (s *Store) spendBudget(tx *sql.Tx, size int64) (bool, error) {
 	var active string
-	err := tx.QueryRow(`SELECT value FROM meta WHERE key = 'backfill_active'`).Scan(&active)
+	err := tx.QueryRow(`SELECT value FROM meta WHERE key = ?`, model.MetaBackfillActive).Scan(&active)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
 	if active != "1" {
 		return false, nil
 	}
-	if s.BackfillBudget <= 0 {
+	if s.budget <= 0 {
 		return true, nil
 	}
-	day := s.Now().UTC().Format("2006-01-02")
+	day := s.now().UTC().Format("2006-01-02")
 	used, err := budgetUsed(tx, day)
 	if err != nil {
 		return false, err
 	}
-	if used > 0 && used+size > s.BackfillBudget {
+	if used > 0 && used+size > s.budget {
 		return false, nil
 	}
 	_, err = tx.Exec(`INSERT INTO meta (key, value) VALUES (?, ?)
 		ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
-		"backfill_used:"+day, strconv.FormatInt(used+size, 10))
+		model.MetaBackfillUsedPrefix+day, strconv.FormatInt(used+size, 10))
 	return true, err
 }
 
@@ -42,7 +44,7 @@ type querier interface {
 
 func budgetUsed(q querier, day string) (int64, error) {
 	var value string
-	err := q.QueryRow(`SELECT value FROM meta WHERE key = ?`, "backfill_used:"+day).Scan(&value)
+	err := q.QueryRow(`SELECT value FROM meta WHERE key = ?`, model.MetaBackfillUsedPrefix+day).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -54,7 +56,7 @@ func budgetUsed(q querier, day string) (int64, error) {
 
 // BudgetUsedToday returns the source bytes backfill has started today.
 func (s *Store) BudgetUsedToday() (int64, error) {
-	return budgetUsed(s.db, s.Now().UTC().Format("2006-01-02"))
+	return budgetUsed(s.db, s.now().UTC().Format("2006-01-02"))
 }
 
 // JobsByID returns every job's state, for working out what backfill has left.
@@ -76,12 +78,12 @@ func (s *Store) JobsByID() (map[string]string, error) {
 }
 
 // LatestJobs returns the newest job for each source path.
-func (s *Store) LatestJobs() (map[string]*Job, error) {
+func (s *Store) LatestJobs() (map[string]*model.Job, error) {
 	jobs, err := s.query(`SELECT ` + jobColumns + ` FROM jobs ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]*Job, len(jobs))
+	out := make(map[string]*model.Job, len(jobs))
 	for _, j := range jobs {
 		out[j.Path] = j
 	}
@@ -92,7 +94,7 @@ func (s *Store) LatestJobs() (map[string]*Job, error) {
 // which would otherwise run with the new settings under the old job ID.
 func (s *Store) CancelStaleProfile(current string) (int64, error) {
 	res, err := s.db.Exec(`UPDATE jobs SET state = ?, updated = ? WHERE state = ? AND profile != ?`,
-		StateCancelled, s.Now().Unix(), StateQueued, current)
+		model.StateCancelled, s.now().Unix(), model.StateQueued, current)
 	if err != nil {
 		return 0, err
 	}

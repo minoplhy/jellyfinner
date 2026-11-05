@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"jellyfinner/internal/queue"
+	"jellyfinner/internal/model"
 )
 
 const maxWebhookBody = 64 << 10
@@ -71,8 +71,8 @@ func (s *Service) HandlePlayback(ctx context.Context, event PlaybackEvent) error
 		return nil
 	}
 
-	src, err := s.Store.SourceByOutput(output, OutputPath)
-	if errors.Is(err, queue.ErrNotFound) {
+	src, err := s.SourceByOutput(output)
+	if errors.Is(err, model.ErrNotFound) {
 		s.Log.Printf("stub %s has no tracked source", output)
 		return nil
 	}
@@ -80,7 +80,7 @@ func (s *Service) HandlePlayback(ctx context.Context, event PlaybackEvent) error
 		return err
 	}
 	if event.UserID != "" {
-		req := queue.Request{Path: src.Path, UserID: event.UserID, Username: event.Username, ItemID: event.ItemID}
+		req := model.Request{Path: src.Path, UserID: event.UserID, Username: event.Username, ItemID: event.ItemID}
 		if err := s.Store.AddRequest(req); err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ func (s *Service) HandlePlayback(ctx context.Context, event PlaybackEvent) error
 		return err
 	}
 	message := "Queued. You will be notified when it is ready."
-	if j.State == queue.StateFailed {
+	if j.State == model.StateFailed {
 		message = "This title could not be prepared. The admin has been told."
 	}
 	if event.SessionID != "" {

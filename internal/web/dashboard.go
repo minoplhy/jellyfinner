@@ -6,8 +6,8 @@ import (
 
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/edgerouter"
+	"jellyfinner/internal/model"
 	"jellyfinner/internal/orchestrator"
-	"jellyfinner/internal/queue"
 )
 
 // nodeState is how a node is doing. Class picks the badge colour: online,
@@ -32,7 +32,7 @@ func (s *Server) workerState(seen time.Time) nodeState {
 
 // edgeState uses the router's own rule, so "online" means viewers are sent
 // there.
-func (s *Server) edgeState(st queue.NodeStatus) nodeState {
+func (s *Server) edgeState(st model.NodeStatus) nodeState {
 	switch {
 	case st.LastSeen == 0:
 		return nodeState{"unseen", "never reported"}
@@ -64,7 +64,7 @@ type dashboardData struct {
 	Manual     bool
 	Tiles      []tile
 	Nodes      []dashNode
-	Active     []*queue.Job
+	Active     []*model.Job
 	Backfill   orchestrator.BackfillStatus
 	Budget     int64
 	BudgetLow  int64
@@ -76,7 +76,7 @@ func (s *Server) dashboardData(csrf string) (dashboardData, error) {
 	data := dashboardData{CSRF: csrf, Manual: s.svc.Cfg.Mode == config.ModeManual,
 		Budget: budget, BudgetLow: budget / 100 * 80, BudgetHigh: budget / 100 * 95}
 	seen := s.lastSeen()
-	for _, node := range s.svc.Store.Nodes() {
+	for _, node := range s.svc.Nodes.All() {
 		row := dashNode{Name: node.Name, Role: "encoding", Seen: seen[node.Name]}
 		if node.Edge() {
 			st, err := s.svc.Store.GetNodeStatus(node.Name)
@@ -96,8 +96,8 @@ func (s *Server) dashboardData(csrf string) (dashboardData, error) {
 	if err != nil {
 		return data, err
 	}
-	for _, t := range []tile{{State: queue.StateQueued, Label: "Queued"}, {State: queue.StateRunning, Label: "Running"},
-		{State: queue.StatePublishing, Label: "Publishing"}, {State: queue.StateDone, Label: "Done"}, {State: queue.StateFailed, Label: "Failed"}} {
+	for _, t := range []tile{{State: model.StateQueued, Label: "Queued"}, {State: model.StateRunning, Label: "Running"},
+		{State: model.StatePublishing, Label: "Publishing"}, {State: model.StateDone, Label: "Done"}, {State: model.StateFailed, Label: "Failed"}} {
 		t.Count = counts[t.State]
 		data.Tiles = append(data.Tiles, t)
 	}
@@ -116,8 +116,8 @@ func (s *Server) dashboardData(csrf string) (dashboardData, error) {
 	return data, nil
 }
 
-func active(j *queue.Job) bool {
-	return j.State == queue.StateRunning || j.State == queue.StatePublishing
+func active(j *model.Job) bool {
+	return j.State == model.StateRunning || j.State == model.StatePublishing
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request, sess *session) {
