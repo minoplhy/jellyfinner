@@ -9,22 +9,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"jellyfinner/internal/config"
-	"jellyfinner/internal/database"
-	"jellyfinner/internal/database/dbtest"
 	"jellyfinner/internal/jellyfin/jellyfintest"
-	"jellyfinner/internal/model"
 )
 
-const (
-	itemID = "0123456789abcdef0123456789abcdef"
-	sign   = "signing-key-signing-key-signing-key"
-)
-
-var hash = strings.Repeat("a", 64)
+const itemID = "0123456789abcdef0123456789abcdef"
 
 type fakeJellyfin struct {
 	jellyfintest.Unimplemented
@@ -48,26 +40,52 @@ func (f *fakeJellyfin) ItemPath(_ context.Context, id string) (string, error) {
 	return "", errors.New("no item")
 }
 
+// fakeResolver answers as the orchestrator would, from a table keyed by
+// lowercased username and library path.
+type fakeResolver struct {
+	mu      sync.Mutex
+	answers map[string]string
+	err     error
+	delay   time.Duration
+	calls   int
+	asked   []string // "user output", as received
+}
+
+func (r *fakeResolver) Resolve(ctx context.Context, user, output string) (string, error) {
+	r.mu.Lock()
+	r.calls++
+	r.asked = append(r.asked, user+" "+output)
+	answer, err, delay := r.answers[strings.ToLower(user)+" "+output], r.err, r.delay
+	r.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return answer, err
+}
+
 type fixture struct {
-	t      *testing.T
-	router *Router
-	store  database.Store
-	jf     *fakeJellyfin
-	hits   *int
-	now    time.Time
+	t        *testing.T
+	router   *Router
+	resolver *fakeResolver
+	jf       *fakeJellyfin
+	hits     *int
+	now      time.Time
 
 	seen *http.Request // the last request upstream received
 }
+
+const edgeURL = "https://edge1.example.com/e/" + "aaaa.mp4?md5=x&expires=1"
 
 func newFixture(t *testing.T) *fixture { return newFixtureAt(t, "") }
 
 // newFixtureAt puts Jellyfin under a Base URL, such as /jf.
 func newFixtureAt(t *testing.T, base string) *fixture {
 	t.Helper()
-	f := &fixture{t: t, now: time.Unix(2000000, 0), hits: new(int)}
-	clock := func() time.Time { return f.now }
-	store := dbtest.Open(t, database.Options{Now: clock})
-	f.store = store
+	f := &fixture{t: t, now: time.Unix(2000000, 0), hits: new(int), resolver: &fakeResolver{answers: map[string]string{}}}
 	f.jf = &fakeJellyfin{users: map[string]string{"alice-token": "alice", "bob-token": "bob"}, items: map[string]string{itemID: "/lib/Movies/A.mp4"}}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*f.hits++
@@ -79,38 +97,13 @@ func newFixtureAt(t *testing.T, base string) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{LibraryDir: "/lib", EdgeURLTTL: 24 * time.Hour}
-	if err := store.AddNode(&model.Node{ID: "edge1", Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", SigningKey: sign}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetViewer("alice", "edge1"); err != nil {
-		t.Fatal(err)
-	}
-	f.router = NewRouter(cfg, store, f.jf, u, log.New(io.Discard, "", 0))
-	f.router.Now = clock
+	f.router = NewRouter(Settings{LibraryDir: "/lib"}, f.resolver, f.jf, u, log.New(io.Discard, "", 0))
+	f.router.Now = func() time.Time { return f.now }
 	return f
 }
 
-func (f *fixture) cached() {
-	f.t.Helper()
-	if err := f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "Movies/A.mp4", Size: 5}); err != nil {
-		f.t.Fatal(err)
-	}
-	if err := f.store.ActivatePlacement("edge1", hash); err != nil {
-		f.t.Fatal(err)
-	}
-	f.healthy()
-}
-
-func (f *fixture) healthy() {
-	f.t.Helper()
-	if err := f.store.NodeSeen("edge1", 1, 1); err != nil {
-		f.t.Fatal(err)
-	}
-	if err := f.store.SetNodeHealth("edge1", true); err != nil {
-		f.t.Fatal(err)
-	}
-}
+// cached makes the orchestrator send alice to her edge for Movies/A.mp4.
+func (f *fixture) cached() { f.resolver.answers["alice Movies/A.mp4"] = edgeURL }
 
 func (f *fixture) get(path string, headers map[string]string) *httptest.ResponseRecorder {
 	f.t.Helper()
@@ -131,43 +124,16 @@ func TestRedirectsAssignedViewer(t *testing.T) {
 	f := newFixture(t)
 	f.cached()
 	w := f.get(stream("alice-token"), nil)
-	if w.Code != http.StatusFound {
-		t.Fatalf("code = %d", w.Code)
-	}
-	loc := w.Header().Get("Location")
-	if !strings.HasPrefix(loc, "https://edge1.example.com/e/"+hash+".mp4?md5=") {
-		t.Errorf("location = %s", loc)
-	}
-	if strings.Contains(loc, "alice-token") {
-		t.Error("the Jellyfin token must never reach the edge")
+	if w.Code != http.StatusFound || w.Header().Get("Location") != edgeURL {
+		t.Fatalf("code = %d, location = %s", w.Code, w.Header().Get("Location"))
 	}
 	if w.Header().Get("Cache-Control") != "no-store" {
 		t.Error("a signed URL must not be cached")
 	}
-	if ps, _ := f.store.NodePlacements("edge1"); ps[0].LastPlayed == 0 {
-		t.Error("the play was not recorded")
-	}
-}
-
-// Viewers refer to the edge by ID, so a rename and a new URL change nothing
-// but where the redirect points. Usernames match without regard to case.
-func TestViewerFollowsAnEditedEdge(t *testing.T) {
-	f := newFixture(t)
-	if err := f.store.SetViewer("BOB", "edge1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.store.UpdateNode(&model.Node{ID: "edge1", Name: "edge-paris", URL: "https://example.com/edge1"}); err != nil {
-		t.Fatal(err)
-	}
-	f.cached()
-	for _, token := range []string{"alice-token", "bob-token"} {
-		w := f.get(stream(token), nil)
-		if loc := w.Header().Get("Location"); w.Code != http.StatusFound || !strings.HasPrefix(loc, "https://example.com/edge1/e/"+hash+".mp4?md5=") {
-			t.Errorf("%s: %d %s", token, w.Code, loc)
-		}
-	}
-	if err := f.store.RemoveViewer("bob"); err != nil {
-		t.Fatal(err)
+	// The orchestrator gets the username and the file inside the library,
+	// never the viewer's Jellyfin token.
+	if len(f.resolver.asked) != 1 || f.resolver.asked[0] != "alice Movies/A.mp4" {
+		t.Errorf("asked = %q", f.resolver.asked)
 	}
 }
 
@@ -198,16 +164,16 @@ func TestEverythingElsePassesThrough(t *testing.T) {
 	f := newFixture(t)
 	f.cached()
 	tests := map[string]string{
-		"not assigned": stream("bob-token"),
-		"bad token":    stream("stolen"),
-		"no token":     "/Videos/" + itemID + "/stream.mp4?static=true",
-		"not static":   "/Videos/" + itemID + "/stream.mp4?api_key=alice-token",
-		"static false": "/Videos/" + itemID + "/stream.mp4?static=false&api_key=alice-token",
-		"hls":          "/Videos/" + itemID + "/master.m3u8?static=true&api_key=alice-token",
-		"other route":  "/Users/Me",
-		"unknown item": "/Videos/ffffffffffffffffffffffffffffffff/stream?static=true&api_key=alice-token",
-		"not an id":    "/Videos/..%2f..%2fetc/stream?static=true&api_key=alice-token",
-		"subtitle":     "/Videos/" + itemID + "/msid/Subtitles/0/stream.srt?api_key=alice-token",
+		"origin answer": stream("bob-token"),
+		"bad token":     stream("stolen"),
+		"no token":      "/Videos/" + itemID + "/stream.mp4?static=true",
+		"not static":    "/Videos/" + itemID + "/stream.mp4?api_key=alice-token",
+		"static false":  "/Videos/" + itemID + "/stream.mp4?static=false&api_key=alice-token",
+		"hls":           "/Videos/" + itemID + "/master.m3u8?static=true&api_key=alice-token",
+		"other route":   "/Users/Me",
+		"unknown item":  "/Videos/ffffffffffffffffffffffffffffffff/stream?static=true&api_key=alice-token",
+		"not an id":     "/Videos/..%2f..%2fetc/stream?static=true&api_key=alice-token",
+		"subtitle":      "/Videos/" + itemID + "/msid/Subtitles/0/stream.srt?api_key=alice-token",
 	}
 	for name, p := range tests {
 		if w := f.get(p, nil); w.Code != http.StatusTeapot {
@@ -227,52 +193,66 @@ func TestPostIsNeverRedirected(t *testing.T) {
 	}
 }
 
+// An orchestrator that fails, or is slower than the timeout, means the origin,
+// and the failure is not remembered.
 func TestFailsOpenToOrigin(t *testing.T) {
-	cases := map[string]func(*fixture){
-		"not cached": func(*fixture) {},
-		"pulling": func(f *fixture) {
-			f.store.AddPlacement(&model.Placement{Node: "edge1", SHA256: hash, Output: "Movies/A.mp4", Size: 5})
-			f.healthy()
-		},
-		"deleting": func(f *fixture) {
-			f.cached()
-			f.store.SetPlacementState("edge1", hash, model.PlacementDeleting, "")
-		},
-		"failed": func(f *fixture) {
-			f.cached()
-			f.store.SetPlacementState("edge1", hash, model.PlacementFailed, "x")
-		},
-		"probe failing": func(f *fixture) {
-			f.cached()
-			f.store.SetNodeHealth("edge1", false)
-		},
-		"agent silent": func(f *fixture) {
-			f.cached()
-			f.now = f.now.Add(2 * HealthWindow)
-		},
-		"database closed": func(f *fixture) {
-			f.cached()
-			f.store.Close()
-		},
+	f := newFixture(t)
+	f.cached()
+	f.resolver.err = errors.New("orchestrator down")
+	if w := f.get(stream("alice-token"), nil); w.Code != http.StatusTeapot {
+		t.Errorf("error: code = %d", w.Code)
 	}
-	for name, setup := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := newFixture(t)
-			setup(f)
-			if w := f.get(stream("alice-token"), nil); w.Code != http.StatusTeapot {
-				t.Errorf("code = %d, want a pass to Jellyfin", w.Code)
-			}
-		})
+	f.resolver.err = nil
+	f.resolver.delay = time.Second
+	f.router.ResolveTimeout = 20 * time.Millisecond
+	start := time.Now()
+	if w := f.get(stream("alice-token"), nil); w.Code != http.StatusTeapot {
+		t.Errorf("slow: code = %d", w.Code)
+	}
+	if waited := time.Since(start); waited > 500*time.Millisecond {
+		t.Errorf("waited %s for a slow orchestrator", waited)
+	}
+	f.resolver.delay = 0
+	if w := f.get(stream("alice-token"), nil); w.Code != http.StatusFound {
+		t.Errorf("recovered: code = %d", w.Code)
+	}
+}
+
+// One answer covers repeated requests, as on a seek, for a short while.
+func TestAnswerIsCachedBriefly(t *testing.T) {
+	f := newFixture(t)
+	f.cached()
+	f.get(stream("alice-token"), nil)
+	f.get(stream("alice-token"), nil)
+	f.get(stream("bob-token"), nil)
+	if f.resolver.calls != 2 {
+		t.Errorf("calls = %d, want one per viewer", f.resolver.calls)
+	}
+	// "Origin" is cached too, then asked again once it ages.
+	f.resolver.answers["bob Movies/A.mp4"] = edgeURL
+	if w := f.get(stream("bob-token"), nil); w.Code != http.StatusTeapot {
+		t.Errorf("bob within the cache = %d", w.Code)
+	}
+	f.now = f.now.Add(answerCacheFor + time.Second)
+	if w := f.get(stream("bob-token"), nil); w.Code != http.StatusFound {
+		t.Errorf("bob after the cache = %d", w.Code)
 	}
 }
 
 func TestContainerLibraryPath(t *testing.T) {
 	f := newFixture(t)
-	f.router.cfg.JellyfinLibraryDir = "/media"
+	f.router.settings.LibraryDir = "/media"
 	f.jf.items[itemID] = "/media/Movies/A.mp4"
 	f.cached()
 	if w := f.get(stream("alice-token"), nil); w.Code != http.StatusFound {
 		t.Errorf("code = %d", w.Code)
+	}
+	// A file outside the library is never asked about.
+	f.jf.items[itemID] = "/elsewhere/A.mp4"
+	f.now = f.now.Add(itemCacheFor + time.Second)
+	calls := f.resolver.calls
+	if w := f.get(stream("alice-token"), nil); w.Code != http.StatusTeapot || f.resolver.calls != calls {
+		t.Errorf("outside the library: code = %d, calls %d", w.Code, f.resolver.calls-calls)
 	}
 }
 
@@ -285,7 +265,6 @@ func TestUserLookupIsCached(t *testing.T) {
 		t.Errorf("seeks must not each call Jellyfin: %d", f.jf.calls)
 	}
 	f.now = f.now.Add(2 * userCacheFor)
-	f.healthy()
 	f.get(stream("alice-token"), nil)
 	if f.jf.calls != 2 {
 		t.Errorf("a revoked token must stop working soon: %d", f.jf.calls)

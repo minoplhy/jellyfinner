@@ -32,11 +32,12 @@ func (s *Server) nodeLabel(id string) string {
 	return id
 }
 
-// edgeOnly keeps node roles apart: an edge node can never take encode jobs,
-// and a worker can never reach edge orders or files.
-func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
+// only keeps node roles apart: each call is for exactly one kind, so an edge
+// node or router can never take encode jobs, and a worker can never reach
+// edge orders, files or redirects.
+func (s *Server) only(kind string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.nodes.Edge(nodeID(r)) == nil {
+		if n := s.nodes.ByID(nodeID(r)); n == nil || n.Kind != kind {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -44,14 +45,39 @@ func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
+	return s.only(model.NodeEdge, next)
+}
+
 func (s *Server) workerOnly(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.nodes.Edge(nodeID(r)) != nil {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		next(w, r)
+	return s.only(model.NodeWorker, next)
+}
+
+func (s *Server) routerOnly(next http.HandlerFunc) http.HandlerFunc {
+	return s.only(model.NodeRouter, next)
+}
+
+// routerResolve tells a router where a viewer should stream a library file
+// from: a signed edge URL, or "" for the origin.
+func (s *Server) routerResolve(w http.ResponseWriter, r *http.Request) {
+	var req control.RouteRequest
+	if !readJSON(w, r, &req) {
+		return
 	}
+	if req.Username == "" || req.Output == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	var target string
+	var err error
+	if s.hooks.Route != nil {
+		target, err = s.hooks.Route(req.Username, req.Output)
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, control.RouteResponse{URL: target})
 }
 
 func (s *Server) edgePoll(w http.ResponseWriter, r *http.Request) {

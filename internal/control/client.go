@@ -293,6 +293,28 @@ func (c *Client) WhoAmI(ctx context.Context) (*WhoAmIResponse, error) {
 	return &out, json.NewDecoder(resp.Body).Decode(&out)
 }
 
+// RouteRequest asks where a Jellyfin user should stream a library file from.
+// Output is the file's path inside the library, with forward slashes.
+type RouteRequest struct {
+	Username string `json:"username"`
+	Output   string `json:"output"`
+}
+
+// RouteResponse is a signed edge URL, or empty for the origin.
+type RouteResponse struct {
+	URL string `json:"url"`
+}
+
+// Resolve asks the orchestrator where to send a viewer. An empty URL means
+// the origin.
+func (c *Client) Resolve(ctx context.Context, username, output string) (string, error) {
+	var resp RouteResponse
+	if _, err := c.post(ctx, "/v1/router/resolve", RouteRequest{Username: username, Output: output}, &resp); err != nil {
+		return "", err
+	}
+	return resp.URL, nil
+}
+
 // Claim asks for work. It returns nil when the queue is empty.
 func (c *Client) Claim(ctx context.Context) (*ClaimResponse, error) {
 	var resp ClaimResponse

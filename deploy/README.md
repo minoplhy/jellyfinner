@@ -33,7 +33,7 @@ Read `edge-security.md` first. Files are stored by content hash, and only finish
 On the orchestrator node:
 
 1. Add each node with `orchestrator node add edge1 --edge --url https://edge1.example.com --quota-gb 500`, and assign viewers on each edge node's Edit page, or with `orchestrator edge assign USER --node edge1`.
-2. Install `systemd/jellyfinner-edge-router.service`, which runs `orchestrator router`, and point the public Jellyfin hostname at the router, which listens on `ROUTER_ADDR`. Every Jellyfin request then passes through it.
+2. Add a router with `orchestrator node add jf-router --router`. On the Jellyfin server, build it with `CGO_ENABLED=0 go build ./cmd/router`, copy `router.env.example` to `/etc/jellyfinner/router.env`, mode 600, create the user `jellyfinner-router`, install `systemd/jellyfinner-router.service`, and run `router doctor` with those settings. Then point the public Jellyfin hostname at the router, which listens on `ROUTER_ADDR`. Every Jellyfin request then passes through it.
 3. Add the router's address to Jellyfin's known proxies, so viewers' real addresses are kept.
 
 On each node:

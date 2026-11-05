@@ -37,6 +37,9 @@ type Hooks struct {
 	Failed    func(*model.Job)
 	// EdgeFailed reports a copy a node no longer holds or could not fetch.
 	EdgeFailed func(node, sha256, reason string)
+	// Route answers a router: a signed edge URL for this user and library
+	// file, or "" for the origin. Nil sends everyone to the origin.
+	Route func(username, output string) (string, error)
 }
 
 // Server handles control requests.
@@ -78,6 +81,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/jobs/{id}/files/{name}", s.workerOnly(s.jobFileUpload))
 	mux.HandleFunc("POST /v1/edge/poll", s.edgeOnly(s.edgePoll))
 	mux.HandleFunc("POST /v1/edge/ack", s.edgeOnly(s.edgeAck))
+	mux.HandleFunc("POST /v1/router/resolve", s.routerOnly(s.routerResolve))
 	mux.HandleFunc("GET /v1/edge/files/{hash}", s.edgeOnly(s.edgeFile))
 	return config.StripPrefix(s.cfg.ControlBasePath(), s.authenticate(mux))
 }
@@ -119,11 +123,12 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 // whoami lets a node test its token without changing anything, because claiming
 // a job to find out could take real work.
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
-	kind := model.NodeWorker
-	if s.nodes.Edge(nodeID(r)) != nil {
-		kind = model.NodeEdge
+	n := s.nodes.ByID(nodeID(r))
+	if n == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
-	writeJSON(w, control.WhoAmIResponse{Name: s.nodeLabel(nodeID(r)), Kind: kind})
+	writeJSON(w, control.WhoAmIResponse{Name: n.Name, Kind: n.Kind})
 }
 
 func (s *Server) markSeen(node string) {

@@ -476,7 +476,7 @@ func (c *Cloud) Reconcile(ctx context.Context) error {
 	c.orphanNodes = map[string]bool{}
 	c.mu.Unlock()
 	for _, n := range nodes {
-		if n.Edge() || !strings.HasPrefix(n.Name, cloudNodePrefix) || held[n.ID] {
+		if !n.Worker() || !strings.HasPrefix(n.Name, cloudNodePrefix) || held[n.ID] {
 			continue
 		}
 		if candidates[n.ID] {

@@ -6,9 +6,10 @@ Each role is one self-contained compose file. Any role can run on any machine in
 
 | Role | Runs | Compose file |
 |---|---|---|
-| Orchestrator node | Orchestrator, control API, admin UI. Optional router, Caddy and Jellyfin | [compose.orchestrator.yml](compose.orchestrator.yml) |
+| Orchestrator node | Orchestrator, control API, admin UI. Optional Caddy and Jellyfin | [compose.orchestrator.yml](compose.orchestrator.yml) |
 | Worker node | Encoder | [compose.worker.yml](compose.worker.yml) |
 | Edge node | File server and pull agent | [compose.edge.yml](compose.edge.yml) |
+| Router | Proxy in front of Jellyfin that sends viewers to their edge node. Runs next to Jellyfin | [compose.router.yml](compose.router.yml) |
 
 Use a file as it is, or paste its services into your own `docker-compose.yaml`, Portainer stack or similar. It needs no script, no `.env`, and no other file. Values you must change are marked `EDIT`. If you prefer a `.env`, replace any value with `${VAR}` as usual.
 
@@ -59,6 +60,25 @@ docker compose up -d
 docker compose run --rm edge-pull doctor
 docker compose run --rm edge-serve doctor
 ```
+
+### Add a router
+
+Viewers reach edge nodes through a router: a proxy that runs on the Jellyfin server, in front of Jellyfin. Every request passes straight through to Jellyfin, except a direct stream of a title cached on that viewer's edge node, which gets a redirect there. The router asks the orchestrator where each viewer goes, so it holds no edge secret, and if it cannot reach the orchestrator everyone simply streams from Jellyfin.
+
+```sh
+docker compose exec orchestrator orchestrator node add jf-router --router
+```
+
+On the Jellyfin server, fill in [compose.router.yml](compose.router.yml) with the printed token, plus `JELLYFIN_URL`, `JELLYFIN_TOKEN` and `JELLYFIN_LIBRARY_DIR`, the library folder as Jellyfin sees it. Then:
+
+```sh
+docker compose up -d
+docker compose run --rm router doctor
+```
+
+Test against port `8204` as in [../first-run.md](../first-run.md) step 6. Once it works, point your public Jellyfin hostname at the router instead of at Jellyfin, and add the router's address to Jellyfin's Known proxies, under Dashboard, Networking, so Jellyfin still sees viewers' real addresses. Assign viewers on each edge node's Edit page.
+
+**Upgrading:** `orchestrator router` and the `router` block in the orchestrator file are gone. Add a router node as above and run `compose.router.yml` instead, on the Jellyfin server or beside the orchestrator if Jellyfin runs there.
 
 ### Manage nodes
 
@@ -129,10 +149,10 @@ Everything runs on a normal bridge network named `jellyfinner`, and ports are pu
 
 | Port | Purpose |
 |---|---|
-| `8200` | Control API, for workers and edge nodes |
+| `8200` | Control API, for workers, edge nodes and routers |
 | `8202` | Admin UI |
 | `8201` | Playback events from Jellyfin, in manual mode. Commented out by default |
-| `8204` | Router, if enabled |
+| `8204` | Router, on the Jellyfin server |
 | `8205` | `edge-serve`, on an edge node |
 
 Nodes need no open ports, except an edge node's HTTPS. They use HTTPS, or plain HTTP inside a private network: a private address, a one-word container name such as `orchestrator`, or a `.internal` name.
@@ -171,8 +191,7 @@ Uncomment these blocks in the file.
 
 | Block | Where | Gives you |
 |---|---|---|
-| `caddy` | Orchestrator, edge | Automatic HTTPS, if you have no reverse proxy. It needs ports 80 and 443 |
-| `router` | Orchestrator | Redirects cached titles to edge nodes. Needs `JELLYFIN_TOKEN` |
+| `caddy` | Orchestrator, edge, router | Automatic HTTPS, if you have no reverse proxy. It needs ports 80 and 443 |
 | `jellyfin` | Orchestrator | Runs Jellyfin, if you do not have one already |
 | `ENCODER`, `devices`, `group_add` | Worker | Encodes with a VAAPI GPU, or with RKMPP on a Rockchip board running its vendor kernel. The worker image is built for amd64 and arm64 |
 | `TRANSFER`, the `rclone` volume | Worker | Transfers with rclone over SFTP, for the speed test in [../first-run.md](../first-run.md) |

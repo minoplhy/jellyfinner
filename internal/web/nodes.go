@@ -23,6 +23,15 @@ type workerView struct {
 	Failed int
 }
 
+// routerView is a router on the Nodes page.
+type routerView struct {
+	ID    string
+	Name  string
+	Allow string
+	State nodeState
+	Seen  time.Time
+}
+
 // edgeView is an edge node on the Nodes page.
 type edgeView struct {
 	orchestrator.NodeRow
@@ -34,6 +43,7 @@ type nodesData struct {
 	CSRF    string
 	Workers []workerView
 	Edges   []edgeView
+	Routers []routerView
 	// Cloud is filled only for the full page and its own fragment, because
 	// it reads the cloud server history.
 	Cloud *cloudView
@@ -89,7 +99,11 @@ func (s *Server) nodesData(csrf string) (nodesData, error) {
 	}
 	seen := s.lastSeen()
 	for _, n := range s.svc.Nodes.All() {
-		if n.Edge() {
+		if n.Router() {
+			data.Routers = append(data.Routers, routerView{ID: n.ID, Name: n.Name, Allow: orchestrator.AllowString(n.Allow),
+				State: s.routerState(seen[n.ID]), Seen: seen[n.ID]})
+		}
+		if !n.Worker() {
 			continue
 		}
 		v := workerView{ID: n.ID, Name: n.Name, Paused: n.Paused, Seen: seen[n.ID], Failed: failed[n.ID]}
@@ -125,7 +139,7 @@ func (s *Server) nodesPage(w http.ResponseWriter, r *http.Request, sess *session
 // nodesFragment refreshes one part of the Nodes page: workers or edges.
 func (s *Server) nodesFragment(w http.ResponseWriter, r *http.Request, sess *session) {
 	part := r.PathValue("part")
-	if part != "workers" && part != "edges" && part != "cloud" {
+	if part != "workers" && part != "edges" && part != "routers" && part != "cloud" {
 		http.NotFound(w, r)
 		return
 	}
@@ -158,6 +172,7 @@ func (s *Server) nodeRemove(w http.ResponseWriter, r *http.Request, sess *sessio
 type secretData struct {
 	Name       string
 	Edge       bool
+	Router     bool
 	Rotated    bool
 	ControlURL string
 	ControlSet bool
@@ -181,9 +196,10 @@ func (s *Server) secretPage(w http.ResponseWriter, sess *session, d secretData) 
 // secrets this once.
 func (s *Server) nodeAdd(w http.ResponseWriter, r *http.Request, sess *session) {
 	spec := orchestrator.NodeSpec{
-		Name:  strings.TrimSpace(r.PostForm.Get("name")),
-		Edge:  r.PostForm.Get("kind") == "edge",
-		Allow: strings.TrimSpace(r.PostForm.Get("allow")),
+		Name:   strings.TrimSpace(r.PostForm.Get("name")),
+		Edge:   r.PostForm.Get("kind") == "edge",
+		Router: r.PostForm.Get("kind") == "router",
+		Allow:  strings.TrimSpace(r.PostForm.Get("allow")),
 	}
 	if spec.Edge {
 		spec.URL = strings.TrimSpace(r.PostForm.Get("url"))
@@ -202,7 +218,7 @@ func (s *Server) nodeAdd(w http.ResponseWriter, r *http.Request, sess *session) 
 		return
 	}
 	s.log.Printf("web: %s added node %s", sess.user, spec.Name)
-	s.secretPage(w, sess, secretData{Name: spec.Name, Edge: spec.Edge, Token: added.Token, SigningKey: added.SigningKey})
+	s.secretPage(w, sess, secretData{Name: spec.Name, Edge: spec.Edge, Router: spec.Router, Token: added.Token, SigningKey: added.SigningKey})
 }
 
 func (s *Server) nodeRotate(w http.ResponseWriter, r *http.Request, sess *session) {

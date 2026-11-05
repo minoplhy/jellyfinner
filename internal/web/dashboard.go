@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
-	"jellyfinner/internal/edgerouter"
+	"jellyfinner/internal/edge"
 	"jellyfinner/internal/model"
 	"jellyfinner/internal/orchestrator"
 )
@@ -35,15 +35,27 @@ func (s *Server) workerState(seen time.Time, paused bool) nodeState {
 	return st
 }
 
+// routerState is online while the router checks in, which it does every
+// minute even when nobody plays anything.
+func (s *Server) routerState(seen time.Time) nodeState {
+	switch {
+	case seen.IsZero():
+		return nodeState{"unseen", "not seen since restart"}
+	case s.now().Sub(seen) < 3*time.Minute:
+		return nodeState{"online", "online"}
+	}
+	return nodeState{"offline", "offline"}
+}
+
 // edgeState uses the router's own rule, so "online" means viewers are sent
 // there.
 func (s *Server) edgeState(st model.NodeStatus) nodeState {
 	switch {
 	case st.LastSeen == 0:
 		return nodeState{"unseen", "never reported"}
-	case edgerouter.Servable(st, s.now()):
+	case edge.Servable(st, s.now()):
 		return nodeState{"online", "online"}
-	case s.now().Sub(time.Unix(st.LastSeen, 0)) < edgerouter.HealthWindow:
+	case s.now().Sub(time.Unix(st.LastSeen, 0)) < edge.HealthWindow:
 		return nodeState{"unhealthy", "unhealthy: probe failing"}
 	}
 	return nodeState{"offline", "not reporting"}
@@ -93,6 +105,8 @@ func (s *Server) dashboardData(csrf string) (dashboardData, error) {
 			if st.LastSeen != 0 {
 				row.Seen = time.Unix(st.LastSeen, 0)
 			}
+		} else if node.Router() {
+			row.Role, row.State = "router", s.routerState(row.Seen)
 		} else {
 			row.State = s.workerState(row.Seen, node.Paused)
 		}

@@ -20,13 +20,14 @@ Jellyfinner has three roles. Any role can run on any machine in any region, and 
                                                  caches chosen titles
 ```
 
-Workers and edge nodes connect out to the orchestrator, using one API with per-node tokens. If a worker goes offline, new titles wait in the queue and finished titles keep playing.
+Workers, edge nodes and the router connect out to the orchestrator, using one API with per-node tokens. If a worker goes offline, new titles wait in the queue and finished titles keep playing.
 
 | Program | Role | Purpose |
 |---|---|---|
-| `orchestrator` | Orchestrator node | Watches originals, runs the queue, publishes encodes, serves the admin UI, and is the CLI. `orchestrator router` optionally sends viewers to a nearby cached copy |
+| `orchestrator` | Orchestrator node | Watches originals, runs the queue, publishes encodes, serves the admin UI, and is the CLI |
 | `worker` | Worker node | Pulls a source, encodes, verifies and pushes the result |
 | `edge-agent` | Edge node | Optional. `pull` fetches and removes cached files on order, and `serve` answers viewers behind any reverse proxy |
+| `router` | Next to Jellyfin | Optional, with edge nodes. A proxy in front of Jellyfin that sends viewers to a nearby cached copy, asking the orchestrator where each goes |
 
 ## Modes
 
@@ -86,6 +87,7 @@ orchestrator node add worker2
 orchestrator node list
 orchestrator node edit worker2 --name gpu-box --allow 10.8.0.0/24   # token and keys stay; edges also take --url and --quota-gb
 orchestrator node rotate worker2
+orchestrator node add jf-router --router      # a router to run next to Jellyfin, see compose.router.yml
 orchestrator edge assign alice --node edge1   # the router sends alice to edge1; also on the edge's Edit page
 orchestrator node remove worker2
 orchestrator node pause worker2        # finishes its job, then takes no more

@@ -92,7 +92,6 @@ type Config struct {
 	LegacyEdgeViewers bool
 	EdgeTokenKey      string
 	EdgeURLTTL        time.Duration
-	RouterAddr        string
 
 	// AdminAddr enables the admin UI. AdminURL is where people open it, and
 	// its path, such as /jellyfinner-admin, is where the UI is served.
@@ -312,7 +311,6 @@ func parse(get func(string) string) (*Config, error) {
 		AdminTLSCert:       get("ADMIN_TLS_CERT"),
 		AdminTLSKey:        get("ADMIN_TLS_KEY"),
 		MetricsAddr:        get("METRICS_ADDR"),
-		RouterAddr:         or(get("ROUTER_ADDR"), "127.0.0.1:8204"),
 		DiscordURL:         get("NOTIFY_DISCORD_URL"),
 		NtfyURL:            get("NOTIFY_NTFY_URL"),
 	}

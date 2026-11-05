@@ -27,10 +27,11 @@ import (
 const token = "0123456789abcdef0123456789abcdef"
 
 type testNode struct {
-	Name  string
-	Token string
-	Allow []netip.Prefix
-	Edge  bool
+	Name   string
+	Token  string
+	Allow  []netip.Prefix
+	Edge   bool
+	Router bool
 }
 
 type fixture struct {
@@ -45,6 +46,7 @@ type fixture struct {
 	nodes     []testNode
 
 	edgeFailed []string
+	routed     []string // "user output" the Route hook was asked
 }
 
 func newFixture(t *testing.T, testNodes []testNode) *fixture {
@@ -56,6 +58,9 @@ func newFixture(t *testing.T, testNodes []testNode) *fixture {
 		node := &model.Node{ID: n.Name, Name: n.Name, Kind: model.NodeWorker, TokenHash: nodes.HashToken(n.Token), Allow: n.Allow}
 		if n.Edge {
 			node.Kind = model.NodeEdge
+		}
+		if n.Router {
+			node.Kind = model.NodeRouter
 		}
 		if err := reg.Add(node); err != nil {
 			t.Fatal(err)
@@ -71,6 +76,13 @@ func newFixture(t *testing.T, testNodes []testNode) *fixture {
 		Failed:    func(j *model.Job) { f.failed = append(f.failed, j) },
 		EdgeFailed: func(node, sha256, reason string) {
 			f.edgeFailed = append(f.edgeFailed, node+":"+reason)
+		},
+		Route: func(user, output string) (string, error) {
+			f.routed = append(f.routed, user+" "+output)
+			if user == "alice" {
+				return "https://edge1.example.com/e/x.mp4?md5=y", nil
+			}
+			return "", nil
 		},
 	}, log.New(io.Discard, "", 0))
 	f.srv = srv
@@ -299,6 +311,57 @@ func TestRolesAreSeparate(t *testing.T) {
 	}
 	if _, err := f.client.EdgePoll(ctx, control.EdgePollRequest{}); err == nil {
 		t.Error("a worker must never read edge orders")
+	}
+}
+
+// A router asks only where a viewer goes; it can take no job and read no edge
+// order, and no other node can ask it.
+func TestRouterResolves(t *testing.T) {
+	routerToken, edgeToken := strings.Repeat("r", 32), strings.Repeat("e", 32)
+	f := newFixture(t, []testNode{{Name: "worker1", Token: token}, {Name: "edge1", Token: edgeToken, Edge: true},
+		{Name: "jf-router", Token: routerToken, Router: true}})
+	ctx := context.Background()
+	router, err := control.NewClient(f.server.URL, routerToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := router.Resolve(ctx, "alice", "Movies/A.mp4"); err != nil || got != "https://edge1.example.com/e/x.mp4?md5=y" {
+		t.Errorf("alice = %q, %v", got, err)
+	}
+	if got, err := router.Resolve(ctx, "bob", "Movies/A.mp4"); err != nil || got != "" {
+		t.Errorf("bob = %q, %v", got, err)
+	}
+	if len(f.routed) != 2 || f.routed[0] != "alice Movies/A.mp4" {
+		t.Errorf("routed = %q", f.routed)
+	}
+	if _, err := router.Resolve(ctx, "", "Movies/A.mp4"); err == nil {
+		t.Error("an empty username must be refused")
+	}
+	if me, err := router.WhoAmI(ctx); err != nil || me.Kind != model.NodeRouter || me.Name != "jf-router" {
+		t.Errorf("whoami = %+v, %v", me, err)
+	}
+
+	f.enqueue(t, "a")
+	if claim, err := router.Claim(ctx); err == nil || claim != nil {
+		t.Error("a router must never take encode jobs")
+	}
+	if _, err := router.Heartbeat(ctx, "a", control.HeartbeatRequest{Lease: "x"}); err == nil {
+		t.Error("a router must never heartbeat a job")
+	}
+	if _, err := router.EdgePoll(ctx, control.EdgePollRequest{}); err == nil {
+		t.Error("a router must never read edge orders")
+	}
+	edge, err := control.NewClient(f.server.URL, edgeToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]*control.Client{"worker": f.client, "edge": edge} {
+		if _, err := c.Resolve(ctx, "alice", "Movies/A.mp4"); err == nil {
+			t.Errorf("a %s must not resolve viewers", name)
+		}
+	}
+	if len(f.routed) != 2 {
+		t.Errorf("a refused call reached the hook: %q", f.routed)
 	}
 }
 

@@ -1,0 +1,28 @@
+[Unit]
+Description=Jellyfinner router, in front of Jellyfin
+After=network-online.target jellyfin.service
+Wants=network-online.target
+
+[Service]
+User=jellyfinner-router
+Group=jellyfinner-router
+EnvironmentFile=/etc/jellyfinner/router.env
+ExecStart=/usr/local/bin/router serve
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

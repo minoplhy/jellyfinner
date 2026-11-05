@@ -64,13 +64,14 @@ func nodeCommand(envFile string, args []string) error {
 func addNode(svc *orchestrator.Service, name string, args []string) error {
 	fs := flag.NewFlagSet("node add", flag.ExitOnError)
 	isEdge := fs.Bool("edge", false, "this node caches encodes for viewers")
+	isRouter := fs.Bool("router", false, "this node sits in front of Jellyfin and sends viewers to edge nodes")
 	edgeURL := fs.String("url", "", "edge only: the node's public https URL")
 	quotaGB := fs.Int64("quota-gb", 0, "edge only: disk space to use")
 	allow := fs.String("allow", "", "source addresses to accept, comma-separated CIDR")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	added, err := svc.AddNode(orchestrator.NodeSpec{Name: name, Edge: *isEdge, URL: *edgeURL, QuotaGB: *quotaGB, Allow: *allow})
+	added, err := svc.AddNode(orchestrator.NodeSpec{Name: name, Edge: *isEdge, Router: *isRouter, URL: *edgeURL, QuotaGB: *quotaGB, Allow: *allow})
 	if err != nil {
 		return err
 	}
@@ -83,6 +84,11 @@ func addNode(svc *orchestrator.Service, name string, args []string) error {
 	if added.Node.Edge() {
 		fmt.Printf("In the edge compose file, under edge-pull, environment:\n\n      ORCHESTRATOR_URL: %s\n      NODE_TOKEN: %s\n\n", control, added.Token)
 		fmt.Printf("Under edge-serve, environment:\n\n      EDGE_SIGNING_KEY: %s\n", added.SigningKey)
+		return nil
+	}
+	if added.Node.Router() {
+		fmt.Printf("In the router compose file, on the Jellyfin server, under router, environment:\n\n      ORCHESTRATOR_URL: %s\n      NODE_TOKEN: %s\n", control, added.Token)
+		fmt.Println("\nAlso set JELLYFIN_URL, JELLYFIN_TOKEN and JELLYFIN_LIBRARY_DIR there. See deploy/docker/compose.router.yml.")
 		return nil
 	}
 	fmt.Printf("In the worker compose file, under worker, environment:\n\n      ORCHESTRATOR_URL: %s\n      NODE_TOKEN: %s\n", control, added.Token)

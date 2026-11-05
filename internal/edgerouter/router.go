@@ -1,9 +1,10 @@
-// Package edgerouter is the reverse proxy in front of Jellyfin.
+// Package edgerouter is the reverse proxy in front of Jellyfin. It runs as its
+// own node, next to Jellyfin, and asks the orchestrator where to send a viewer;
+// it holds no database and no edge secret.
 package edgerouter
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -16,16 +17,19 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
-	"jellyfinner/internal/database"
-	"jellyfinner/internal/edge"
 	"jellyfinner/internal/jellyfin"
-	"jellyfinner/internal/model"
-	"jellyfinner/internal/nodes"
 )
 
 const (
 	userCacheFor = time.Minute
 	itemCacheFor = 5 * time.Minute
+	// answerCacheFor is how long a redirect decision is reused. Apps often
+	// ask for the same stream twice in a row, as on a seek.
+	answerCacheFor = 30 * time.Second
+	// resolveTimeout bounds the wait for the orchestrator. Past it the viewer
+	// streams from the origin, so a slow orchestrator never delays playback
+	// by more than this.
+	resolveTimeout = 2 * time.Second
 )
 
 // streamPath matches Jellyfin's direct-stream URLs, with or without a media
@@ -35,6 +39,20 @@ var streamPath = regexp.MustCompile(`(?i)^/videos/([0-9a-f-]{32,36})(?:/[^/]+)?/
 // tokenInHeader finds Token="..." in a MediaBrowser Authorization header.
 var tokenInHeader = regexp.MustCompile(`(?i)\bToken="([^"]+)"`)
 
+// Resolver decides where a Jellyfin user streams a library file from: a
+// signed edge URL, or "" for the origin. The orchestrator answers it over
+// the control API.
+type Resolver interface {
+	Resolve(ctx context.Context, username, output string) (string, error)
+}
+
+// Settings are what the router needs from its own environment.
+type Settings struct {
+	// LibraryDir is the library folder as Jellyfin sees it, so an item's path
+	// can be named inside the library.
+	LibraryDir string
+}
+
 type cached struct {
 	value string
 	until time.Time
@@ -42,28 +60,30 @@ type cached struct {
 
 // Router sits in front of Jellyfin. Everything passes straight through, except
 // a direct stream of a title cached near the viewer, which gets a 302. Every
-// doubt or error also passes through, so a router fault can only ever mean
-// streaming from the origin.
+// doubt or error also passes through, so a router fault, or an orchestrator
+// that is down, can only ever mean streaming from the origin.
 type Router struct {
-	cfg      *config.Config
-	store    database.Store
-	nodes    *nodes.Registry
+	settings Settings
+	resolver Resolver
 	jellyfin jellyfin.API
 	proxy    http.Handler
 	base     string // Jellyfin's Base URL, such as /jf
 	log      *log.Logger
 	// Now is the clock, replaceable in tests.
 	Now func() time.Time
+	// ResolveTimeout bounds each question to the orchestrator.
+	ResolveTimeout time.Duration
 
-	mu    sync.Mutex
-	users map[string]cached
-	items map[string]cached
+	mu      sync.Mutex
+	users   map[string]cached
+	items   map[string]cached
+	answers map[string]cached
 }
 
 // NewRouter returns a router in front of upstream. A path in upstream is
 // Jellyfin's Base URL. Requests pass with their path unchanged, because
 // Jellyfin expects that prefix itself.
-func NewRouter(cfg *config.Config, store database.Store, jf jellyfin.API, upstream *url.URL, logger *log.Logger) *Router {
+func NewRouter(settings Settings, resolver Resolver, jf jellyfin.API, upstream *url.URL, logger *log.Logger) *Router {
 	base, _ := config.BasePath(upstream.Path)
 	proxy := &httputil.ReverseProxy{
 		FlushInterval: -1,
@@ -88,10 +108,9 @@ func NewRouter(cfg *config.Config, store database.Store, jf jellyfin.API, upstre
 			}
 		},
 	}
-	rt := &Router{cfg: cfg, store: store, jellyfin: jf, proxy: proxy, base: base, log: logger, Now: time.Now,
-		users: map[string]cached{}, items: map[string]cached{}}
-	rt.nodes = nodes.New(store, func() time.Time { return rt.Now() })
-	return rt
+	return &Router{settings: settings, resolver: resolver, jellyfin: jf, proxy: proxy, base: base, log: logger,
+		Now: time.Now, ResolveTimeout: resolveTimeout,
+		users: map[string]cached{}, items: map[string]cached{}, answers: map[string]cached{}}
 }
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -160,56 +179,22 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 	if err != nil {
 		return "", err
 	}
-	node := rt.nodes.ViewerEdge(user)
-	if node == nil {
-		return "", nil
-	}
 	itemPath, err := rt.lookup(rt.items, itemID, itemCacheFor, func() (string, error) {
 		return rt.jellyfin.ItemPath(ctx, itemID)
 	})
 	if err != nil {
 		return "", err
 	}
-	output, ok := relative(rt.libraryRoot(), itemPath)
+	output, ok := relative(rt.settings.LibraryDir, itemPath)
 	if !ok {
 		return "", nil
 	}
-	p, err := rt.store.ActivePlacement(output, node.ID)
-	if errors.Is(err, model.ErrNotFound) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	status, err := rt.store.GetNodeStatus(node.ID)
-	if err != nil {
-		return "", err
-	}
-	now := rt.Now()
-	if !Servable(status, now) {
-		return "", nil
-	}
-	if err := rt.store.TouchPlacement(node.ID, p.SHA256); err != nil {
-		rt.log.Printf("router, record play: %v", err)
-	}
-	return edge.SignURL(node.URL, node.SigningKey, p.SHA256, now.Add(rt.cfg.EdgeURLTTL)), nil
-}
-
-// HealthWindow is how recently an agent must have reported for its node to be
-// used.
-const HealthWindow = time.Minute
-
-// Servable is the health rule: the orchestrator's probe passed and the agent reported
-// recently.
-func Servable(st model.NodeStatus, now time.Time) bool {
-	return st.Healthy && now.Sub(time.Unix(st.LastSeen, 0)) < HealthWindow
-}
-
-func (rt *Router) libraryRoot() string {
-	if rt.cfg.JellyfinLibraryDir != "" {
-		return rt.cfg.JellyfinLibraryDir
-	}
-	return rt.cfg.LibraryDir
+	// Usernames match without regard to case, as on the orchestrator.
+	return rt.lookup(rt.answers, strings.ToLower(user)+"\x00"+output, answerCacheFor, func() (string, error) {
+		ask, cancel := context.WithTimeout(ctx, rt.ResolveTimeout)
+		defer cancel()
+		return rt.resolver.Resolve(ask, user, output)
+	})
 }
 
 func relative(root, path string) (string, bool) {

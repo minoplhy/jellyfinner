@@ -34,12 +34,12 @@ import (
 const usage = `usage: orchestrator [--env FILE] COMMAND
 
   serve
-  router                       proxy in front of Jellyfin, a separate process
-  health serve|router          exits non-zero if that process is not listening
+  health serve                 exits non-zero if serve is not listening
   doctor                       checks settings, folders, database and Jellyfin
   prepare --owner UID:GID PATH[:MODE]...  creates data folders, run once as root
   node add NAME [--allow CIDR,...]
   node add NAME --edge --url URL --quota-gb N [--allow CIDR,...]
+  node add NAME --router [--allow CIDR,...]   in front of Jellyfin, see compose.router.yml
   node list
   node remove NAME
   node edit NAME [--name NEW] [--allow CIDR,...] [--url URL] [--quota-gb N]
@@ -89,8 +89,6 @@ func main() {
 	switch args[0] {
 	case "serve":
 		err = serve(*envFile)
-	case "router":
-		err = router(*envFile)
 	case "health":
 		err = health(*envFile, args[1:])
 	case "doctor":
@@ -127,11 +125,7 @@ func health(envFile string, args []string) error {
 	if err != nil {
 		return err
 	}
-	addr := cfg.ControlAddr
-	if len(args) == 1 && args[0] == "router" {
-		addr = cfg.RouterAddr
-	}
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", cfg.ControlAddr, 5*time.Second)
 	if err != nil {
 		return err
 	}
@@ -223,6 +217,7 @@ func serve(envFile string) error {
 		EdgeFailed: func(node, sha256, reason string) {
 			svc.EdgeCopyFailed(ctx, node, sha256, reason)
 		},
+		Route: svc.EdgeRedirect,
 	}, logger)
 	if err := orchestrator.CheckCloudProviders(svc); err != nil {
 		return err

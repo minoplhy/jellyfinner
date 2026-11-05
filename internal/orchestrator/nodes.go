@@ -22,6 +22,7 @@ const ControlURLPlaceholder = "https://control.example.com"
 type NodeSpec struct {
 	Name    string
 	Edge    bool
+	Router  bool // sits in front of Jellyfin; not with Edge
 	URL     string
 	QuotaGB int64
 	Allow   string
@@ -79,10 +80,24 @@ func (s *Service) addNode(spec NodeSpec, rented bool) (NodeSecrets, error) {
 	} else if spec.URL != "" || spec.QuotaGB != 0 {
 		return out, errors.New("a URL and a quota are only for edge nodes")
 	}
+	if spec.Router {
+		if spec.Edge || rented {
+			return out, errors.New("a node is an edge node or a router, not both")
+		}
+		node.Kind = model.NodeRouter
+	}
 	if err := s.Nodes.Add(&node); err != nil {
 		return out, err
 	}
 	return NodeSecrets{Node: node, Token: token, SigningKey: node.SigningKey}, nil
+}
+
+// kindArticle names a node kind with its article, for messages.
+func kindArticle(kind string) string {
+	if kind == model.NodeEdge {
+		return "an edge"
+	}
+	return "a " + kind
 }
 
 func checkNodeName(name string, rented bool) error {
@@ -114,7 +129,7 @@ type NodeEdit struct {
 // Rented reports whether a node belongs to a rented server, which the cloud
 // scaler names and manages, so it cannot be edited.
 func Rented(n *model.Node) bool {
-	return !n.Edge() && strings.HasPrefix(n.Name, cloudNodePrefix)
+	return n.Worker() && strings.HasPrefix(n.Name, cloudNodePrefix)
 }
 
 // EditNode changes a node's name, allowed addresses, and for an edge node its
@@ -185,8 +200,8 @@ func (s *Service) setPaused(id string, paused bool) error {
 	if err != nil {
 		return err
 	}
-	if n.Edge() {
-		return fmt.Errorf("%s is an edge node, which takes no jobs, so it cannot be paused", n.Name)
+	if !n.Worker() {
+		return fmt.Errorf("%s is %s node, which takes no jobs, so it cannot be paused", n.Name, kindArticle(n.Kind))
 	}
 	return s.Nodes.SetPaused(id, paused)
 }
@@ -225,7 +240,7 @@ func (s *Service) SetAllWorkersPaused(paused bool) ([]string, error) {
 	}
 	var names []string
 	for _, n := range all {
-		if n.Edge() {
+		if !n.Worker() {
 			continue
 		}
 		if err := s.Nodes.SetPaused(n.ID, paused); err != nil {

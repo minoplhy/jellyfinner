@@ -1,4 +1,4 @@
-# Orchestrator node: orchestrator and router, one binary. Needs cgo for SQLite.
+# Orchestrator node: serve and the CLI, one binary. Needs cgo for SQLite.
 # Build from the repository root.
 FROM golang:1.27-bookworm AS build
 # One compile job, so builds fit on small machines.
@@ -27,7 +27,6 @@ ENV JELLYFINNER_IN_CONTAINER=1 \
     LIBRARY_DIR=/store/library \
     INCOMING_DIR=/store/incoming \
     CONTROL_ADDR=0.0.0.0:8200 \
-    ROUTER_ADDR=0.0.0.0:8204 \
     WEBHOOK_ADDR=0.0.0.0:8201 \
     TRUSTED_PROXIES=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7
 ENTRYPOINT ["orchestrator"]

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"jellyfinner/internal/edgerouter"
+	"jellyfinner/internal/edge"
 	"jellyfinner/internal/model"
 	"jellyfinner/internal/pipeline"
 )
@@ -254,7 +254,7 @@ func (s *Service) NodeRows() ([]NodeRow, error) {
 		if row.Placements, err = s.Store.NodePlacements(n.ID); err != nil {
 			return nil, err
 		}
-		row.Online = edgerouter.Servable(row.Status, s.Now())
+		row.Online = edge.Servable(row.Status, s.Now())
 		row.Viewers = s.EdgeViewers(n.ID)
 		rows = append(rows, row)
 	}

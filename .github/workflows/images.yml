@@ -54,6 +54,8 @@ jobs:
             platforms: linux/amd64,linux/arm64
           - image: edge-agent
             platforms: linux/amd64
+          - image: router
+            platforms: linux/amd64,linux/arm64
     steps:
       - uses: actions/checkout@v4
 

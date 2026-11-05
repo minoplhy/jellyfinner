@@ -337,6 +337,39 @@ func TestEditNodesFromTheWeb(t *testing.T) {
 	}
 }
 
+func TestAddARouterFromTheWeb(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.ControlURL = "https://control.example.org"
+	c := f.admin()
+	token := f.csrf(c)
+	code, body := f.post(c, "/nodes/add", url.Values{"csrf": {token}, "kind": {"router"}, "name": {"front1"}})
+	if code != http.StatusOK || !strings.Contains(body, "router compose file") || !strings.Contains(body, "JELLYFIN_LIBRARY_DIR") {
+		t.Fatalf("add router = %d: %s", code, body)
+	}
+	m := nodeToken.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no token shown: %s", body)
+	}
+	n := f.svc.Nodes.ByToken(m[1])
+	if n == nil || !n.Router() {
+		t.Fatalf("router = %+v", n)
+	}
+	_, body = f.get(c, "/nodes")
+	routers := body[strings.Index(body, `id="routers"`):]
+	workers := body[strings.Index(body, `id="workers"`):strings.Index(body, `id="routers"`)]
+	if !strings.Contains(routers, "front1") || strings.Contains(workers, "front1") {
+		t.Error("a router is listed with routers, not workers")
+	}
+	if got, _ := f.post(c, "/nodes/"+n.ID+"/pause", url.Values{"csrf": {token}}); got == http.StatusOK {
+		if _, body := f.get(c, "/nodes"); !strings.Contains(body, "takes no jobs") {
+			t.Error("pausing a router must be refused")
+		}
+	}
+	if _, body := f.get(c, "/"); !strings.Contains(body, "front1") {
+		t.Error("the dashboard lists the router")
+	}
+}
+
 func TestEdgeViewersFromTheWeb(t *testing.T) {
 	f := newFixture(t)
 	f.auth.users = []string{"alice", "bob", "carol"}

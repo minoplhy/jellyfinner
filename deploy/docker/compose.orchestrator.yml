@@ -102,23 +102,9 @@ services:
       timeout: 10s
       start_period: 20s
 
-  # Edge delivery. A separate process, so restarting the orchestrator leaves
-  # Jellyfin reachable. Uncomment, and point your public hostname here once
-  # it is proven.
-  #
-  # router:
-  #   <<: *app
-  #   command: ["router"]
-  #   ports:
-  #     - 127.0.0.1:8204:8204
-  #   healthcheck:
-  #     test: ["CMD", "orchestrator", "health", "router"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     start_period: 20s
-
   # Automatic HTTPS, if you have no reverse proxy. It needs ports 80 and 443, and
-  # DNS for both hostnames. Use http://router:8204 for viewers once proven.
+  # DNS for both hostnames. With edge delivery, a router in front of Jellyfin
+  # takes over the viewer hostname instead: see compose.router.yml.
   #
   # caddy:
   #   image: caddy:2-alpine

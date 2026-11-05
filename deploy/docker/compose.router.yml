@@ -1,0 +1,73 @@
+# Jellyfinner router. Runs on the Jellyfin server, in front of Jellyfin, and
+# sends viewers assigned to an edge node there for titles it has cached. Every
+# other request, and every doubt, passes straight through to Jellyfin.
+#
+# This file is the whole deployment: paste it into your own compose file, fill
+# in the values printed by this on the orchestrator node
+#   docker compose exec orchestrator orchestrator node add jf-router --router
+# then run
+#   docker compose up -d
+#   docker compose run --rm router doctor
+#
+# Test against port 8204 first (deploy/first-run.md, step 6). Then point your
+# public Jellyfin hostname at this port instead of at Jellyfin, and add the
+# router's address to Jellyfin's Known proxies (Dashboard, Networking), so
+# Jellyfin still sees viewers' real addresses. If the orchestrator is down,
+# everyone simply streams from Jellyfin.
+name: jellyfinner-router
+
+services:
+  router:
+    image: ghcr.io/minoplhy/jellyfinner/router:latest # Pin a version to keep nodes matched.
+    restart: unless-stopped
+    environment:
+      ORCHESTRATOR_URL: https://control.example.com # EDIT
+      NODE_TOKEN: replace-with-the-printed-token # EDIT
+      # Jellyfin as this container reaches it, with its Base URL if it has one.
+      # On the host: http://host.docker.internal:8096. In the same compose
+      # project or on Jellyfin's network: http://jellyfin:8096.
+      JELLYFIN_URL: http://host.docker.internal:8096 # EDIT
+      # A Jellyfin API key: Dashboard, API Keys.
+      JELLYFIN_TOKEN: replace-with-a-jellyfin-api-key # EDIT
+      # The library folder as Jellyfin sees it, the same as JELLYFIN_LIBRARY_DIR
+      # on the orchestrator. Wrong here means nobody is ever redirected.
+      JELLYFIN_LIBRARY_DIR: /media # EDIT
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      # Point your reverse proxy, the one serving your Jellyfin hostname, here.
+      - 127.0.0.1:8204:8204
+    read_only: true
+    mem_limit: 64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/router", "health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+    # With Jellyfin in another compose project, join its network instead of
+    # going through the host, and use http://jellyfin:8096 above.
+    # networks:
+    #   - jellyfin
+
+  # Automatic HTTPS for your Jellyfin hostname, if this server has no reverse
+  # proxy. It needs ports 80 and 443, so it replaces whatever served Jellyfin.
+  #
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   command: ["caddy", "reverse-proxy", "--from", "tv.example.com", "--to", "router:8204"] # EDIT
+  #   ports:
+  #     - 80:80
+  #     - 443:443
+  #   volumes:
+  #     - ./data/caddy/data:/data
+  #     - ./data/caddy/config:/config
+
+# networks:
+#   jellyfin:
+#     external: true
+#     name: jellyfin_default # EDIT: docker network ls

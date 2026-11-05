@@ -91,7 +91,7 @@ docker compose exec orchestrator orchestrator edge list
 
 ## 6. Router
 
-Assign the test user to the edge node, on its Edit page under Viewers, or with `docker compose exec orchestrator orchestrator edge assign testuser --node edge1`. Uncomment the `router` block, and run `docker compose up -d`. Keep your public hostname pointed at Jellyfin for now, and test against port 8204.
+Assign the test user to the edge node, on its Edit page under Viewers, or with `docker compose exec orchestrator orchestrator edge assign testuser --node edge1`. Add a router with `docker compose exec orchestrator orchestrator node add jf-router --router`, then on the Jellyfin server fill in [docker/compose.router.yml](docker/compose.router.yml) and run `docker compose up -d` and `docker compose run --rm router doctor`. Keep your public hostname pointed at Jellyfin for now, and test against port 8204 on the Jellyfin server.
 
 **Check:** with the test user's token, a stream request returns a 302 to the edge node:
 

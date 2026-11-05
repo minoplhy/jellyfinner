@@ -24,10 +24,12 @@ const (
 	PriorityNew      = 10
 )
 
-// Node kinds. A node has exactly one, so an edge token can never take a job.
+// Node kinds. A node has exactly one, and each API call checks it, so an edge
+// or router token can never take a job.
 const (
 	NodeWorker = "worker"
 	NodeEdge   = "edge"
+	NodeRouter = "router" // sits in front of Jellyfin and sends viewers to edges
 )
 
 // Placement states. Only an active placement is ever served.
@@ -146,6 +148,12 @@ type Node struct {
 
 // Edge reports whether this node caches encodes.
 func (n *Node) Edge() bool { return n.Kind == NodeEdge }
+
+// Worker reports whether this node takes encode jobs.
+func (n *Node) Worker() bool { return n.Kind == NodeWorker }
+
+// Router reports whether this node sits in front of Jellyfin.
+func (n *Node) Router() bool { return n.Kind == NodeRouter }
 
 // Viewer sends one Jellyfin user to an edge node, by the edge's ID. Usernames
 // match without regard to case, as Jellyfin logins do.

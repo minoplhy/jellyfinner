@@ -1,0 +1,22 @@
+# Router: runs next to Jellyfin, in front of it, and sends viewers to their
+# edge node. A static binary on an empty image, with no shell and no database.
+# Build from the repository root.
+FROM golang:1.27-bookworm AS build
+# One compile job, so builds fit on small machines.
+ENV GOFLAGS=-p=1
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd cmd
+COPY internal internal
+RUN CGO_ENABLED=0 go build -o /out/router ./cmd/router
+
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=build /out/router /router
+USER 10001:10001
+# Binding every interface is safe here, because the published port decides the
+# exposure.
+ENV ROUTER_ADDR=0.0.0.0:8204
+ENTRYPOINT ["/router"]
+CMD ["serve"]

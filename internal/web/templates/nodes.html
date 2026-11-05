@@ -15,6 +15,13 @@
 {{template "addedge" $csrf}}
 {{template "edges" .Content}}
 <p class="muted small">An edge node is online when its agent reported within the last minute and the orchestrator's probe of its URL passed. Only online edge nodes get viewers.</p>
+
+<div class="page-head">
+  <h2>Routers <span class="count">{{len .Content.Routers}}</span></h2>
+</div>
+{{template "addrouter" $csrf}}
+{{template "routers" .Content}}
+<p class="muted small">A router runs next to Jellyfin, in front of it, and sends viewers to their edge node for cached titles. It asks this orchestrator each time, so it holds no edge secret; if it cannot reach the orchestrator, everyone streams from Jellyfin as usual. It checks in every minute.</p>
 {{if .Content.Cloud}}{{template "cloud" .Content}}{{end}}
 {{end}}
 
@@ -89,6 +96,43 @@
     <div class="form-actions"><button class="primary">Add node</button><span class="muted small">The next page shows its token once.</span></div>
   </form>
 </details>
+{{end}}
+
+{{define "addrouter"}}
+<details class="add panel">
+  <summary class="button">Add a router</summary>
+  <form method="post" action="{{base}}/nodes/add">
+    <input type="hidden" name="csrf" value="{{.}}">
+    <input type="hidden" name="kind" value="router">
+    <div class="form-grid">
+      <label>Name <input type="text" name="name" required pattern="[a-z0-9\-]+" placeholder="jf-router" title="Lowercase letters, digits and dashes"></label>
+      <label>Allowed addresses, optional <input type="text" name="allow" placeholder="the Jellyfin server's address, 203.0.113.7/32"></label>
+    </div>
+    <div class="form-actions"><button class="primary">Add router</button><span class="muted small">The next page shows its token once.</span></div>
+  </form>
+</details>
+{{end}}
+
+{{define "routers"}}
+{{$csrf := .CSRF}}
+<div id="routers" class="panel flush" data-poll hx-get="{{base}}/fragments/nodes/routers" hx-trigger="every 30s" hx-swap="outerHTML">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Router</th><th>State</th><th>Last seen</th><th>Allowed addresses</th><th></th></tr></thead>
+    <tbody>
+    {{range .Routers}}
+    <tr id="node-{{.ID}}">
+      <td class="nowrap"><b>{{.Name}}</b></td>
+      <td>{{template "nodebadge" .State}}</td>
+      <td class="muted nowrap">{{if .Seen.IsZero}}—{{else}}{{agoT .Seen}}{{end}}</td>
+      <td class="small">{{or .Allow "any"}}</td>
+      <td class="actions">{{template "nodeadmin" (nodeAdmin .ID .Name false $csrf)}}</td>
+    </tr>
+    {{else}}<tr><td class="empty" colspan="5">No router yet. Edge nodes get viewers only through one: add it here, then run compose.router.yml next to Jellyfin.</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
 {{end}}
 
 {{define "addedge"}}

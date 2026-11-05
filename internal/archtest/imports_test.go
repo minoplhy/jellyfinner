@@ -72,10 +72,10 @@ func TestImportRules(t *testing.T) {
 	}
 }
 
-// The worker and edge agent build as static binaries with CGO_ENABLED=0, so
+// The worker, edge agent and router build as static binaries with CGO_ENABLED=0, so
 // nothing they import, however indirectly, may pull in the database.
 func TestNodeBinariesStayFreeOfTheDatabase(t *testing.T) {
-	for _, cmd := range []string{"jellyfinner/cmd/worker", "jellyfinner/cmd/edge-agent"} {
+	for _, cmd := range []string{"jellyfinner/cmd/worker", "jellyfinner/cmd/edge-agent", "jellyfinner/cmd/router"} {
 		out, err := exec.Command("go", "list", "-deps", cmd).Output()
 		if err != nil {
 			t.Fatalf("go list %s: %v", cmd, err)
