@@ -218,7 +218,7 @@ func (s *Service) Summary(ctx context.Context, month time.Time, c *Cloud) (Summa
 	return sum, err
 }
 
-// cloudNodeTypes maps every rented server's node name to provider and type.
+// cloudNodeTypes maps every rented server's node ID to provider and type.
 func (s *Service) cloudNodeTypes() (map[string]model.CloudServer, error) {
 	rows, err := s.Store.CloudServers(time.Time{})
 	if err != nil {
@@ -226,23 +226,24 @@ func (s *Service) cloudNodeTypes() (map[string]model.CloudServer, error) {
 	}
 	out := make(map[string]model.CloudServer, len(rows))
 	for _, r := range rows {
-		out[r.Name] = *r
+		out[r.Node] = *r
 	}
 	return out, nil
 }
 
-// workRows groups outcomes by worker, or by cloud type for rented servers.
+// workRows groups outcomes by worker ID, so a renamed worker keeps one row
+// under its name now, or by cloud type for rented servers.
 // A malformed manifest counts as no output and a full encode, never an error.
 func workRows(outcomes []model.JobOutcome, cloudNodes map[string]model.CloudServer) ([]WorkRow, WorkRow) {
 	var rows []WorkRow
 	index := map[string]int{}
 	total := WorkRow{Name: "Total"}
 	for _, o := range outcomes {
-		key, row := o.Node, WorkRow{Name: o.Node}
+		key, row := o.Node, WorkRow{Name: o.NodeName}
 		if srv, ok := cloudNodes[o.Node]; ok {
 			key = "\x00" + srv.Provider + "/" + srv.Type
 			row = WorkRow{Name: srv.Provider + " " + srv.Type, Cloud: true, Provider: srv.Provider, Type: srv.Type}
-		} else if strings.HasPrefix(o.Node, cloudNodePrefix) {
+		} else if strings.HasPrefix(o.NodeName, cloudNodePrefix) {
 			row.Cloud = true
 		} else if o.Node == "" {
 			key, row.Name = "", "never claimed"

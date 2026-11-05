@@ -222,14 +222,14 @@ func (c *Cloud) Advance(ctx context.Context) error {
 	}
 	paused := map[string]bool{}
 	for _, n := range nodes {
-		paused[n.Name] = n.Paused
+		paused[n.ID] = n.Paused
 	}
 	seen := c.seen()
 	now := c.now()
 	var errs []error
 	for _, r := range rows {
 		before := *r
-		if err := c.step(ctx, r, running[r.Name] > 0, paused[r.Name], seen[r.Name], now); err != nil {
+		if err := c.step(ctx, r, running[r.Node] > 0, paused[r.Node], seen[r.Node], now); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", r.Name, err))
 		}
 		if *r != before {
@@ -281,7 +281,7 @@ func (c *Cloud) step(ctx context.Context, r *model.CloudServer, busy, paused boo
 	}
 	if r.State == model.CloudDraining {
 		if !paused {
-			if err := c.svc.Nodes.SetPaused(r.Name, true); err != nil && !errors.Is(err, model.ErrNotFound) {
+			if err := c.svc.Nodes.SetPaused(r.Node, true); err != nil && !errors.Is(err, model.ErrNotFound) {
 				return err
 			}
 		}
@@ -317,7 +317,7 @@ func (c *Cloud) confirmDelete(ctx context.Context, p cloud.Provider, r *model.Cl
 			c.mu.Lock()
 			delete(c.lastDelete, key)
 			c.mu.Unlock()
-			if err := c.svc.Nodes.Remove(r.Name); err != nil && !errors.Is(err, model.ErrNotFound) {
+			if err := c.svc.Nodes.Remove(r.Node); err != nil && !errors.Is(err, model.ErrNotFound) {
 				return err
 			}
 			c.svc.Log.Printf("cloud: %s on %s is deleted, confirmed by the provider", r.Name, r.Provider)
@@ -402,10 +402,10 @@ func (c *Cloud) Reconcile(ctx context.Context) error {
 		return err
 	}
 	byID := map[string]*model.CloudServer{}
-	names := map[string]bool{}
+	held := map[string]bool{} // node IDs with a server row
 	for _, r := range rows {
 		byID[r.Provider+"/"+r.ID] = r
-		names[r.Name] = true
+		held[r.Node] = true
 	}
 	now := c.now()
 	var errs []error
@@ -460,7 +460,7 @@ func (c *Cloud) Reconcile(ctx context.Context) error {
 			if err := c.svc.Store.UpdateCloudServer(r); err != nil {
 				errs = append(errs, err)
 			}
-			if err := c.svc.Nodes.Remove(r.Name); err != nil && !errors.Is(err, model.ErrNotFound) {
+			if err := c.svc.Nodes.Remove(r.Node); err != nil && !errors.Is(err, model.ErrNotFound) {
 				errs = append(errs, err)
 			}
 		}
@@ -476,17 +476,17 @@ func (c *Cloud) Reconcile(ctx context.Context) error {
 	c.orphanNodes = map[string]bool{}
 	c.mu.Unlock()
 	for _, n := range nodes {
-		if n.Edge() || !strings.HasPrefix(n.Name, cloudNodePrefix) || names[n.Name] {
+		if n.Edge() || !strings.HasPrefix(n.Name, cloudNodePrefix) || held[n.ID] {
 			continue
 		}
-		if candidates[n.Name] {
-			if err := c.svc.Nodes.Remove(n.Name); err != nil && !errors.Is(err, model.ErrNotFound) {
+		if candidates[n.ID] {
+			if err := c.svc.Nodes.Remove(n.ID); err != nil && !errors.Is(err, model.ErrNotFound) {
 				errs = append(errs, err)
 			}
 			continue
 		}
 		c.mu.Lock()
-		c.orphanNodes[n.Name] = true
+		c.orphanNodes[n.ID] = true
 		c.mu.Unlock()
 	}
 	return errors.Join(errs...)
@@ -522,7 +522,7 @@ func (c *Cloud) scaleUp(ctx context.Context) error {
 			spare++
 		case model.CloudReady:
 			active++
-			if running[r.Name] == 0 {
+			if running[r.Node] == 0 {
 				spare++
 			}
 		case model.CloudDraining, model.CloudDeleting:
@@ -639,25 +639,26 @@ func (c *Cloud) create(ctx context.Context, p cloud.Provider, typ, loc string, p
 		return nil, err
 	}
 	name := cloudNodePrefix + p.Name() + "-" + hex.EncodeToString(suffix)
-	added, err := c.svc.AddNode(NodeSpec{Name: name})
+	added, err := c.svc.addCloudNode(name)
 	if err != nil {
 		return nil, err
 	}
+	node := added.Node.ID
 	userData, err := cloud.UserData(cloud.BootValues{Image: c.cfg.WorkerImage, URL: c.svc.Cfg.ControlURL, Token: added.Token})
 	if err != nil {
-		_ = c.svc.Nodes.Remove(name)
+		_ = c.svc.Nodes.Remove(node)
 		return nil, fmt.Errorf("%w: %w", cloud.ErrConfig, err)
 	}
 	srv, err := p.Create(ctx, cloud.Spec{Name: name, Type: typ, Location: loc, UserData: userData, Cluster: c.cluster})
 	if err != nil {
-		_ = c.svc.Nodes.Remove(name)
+		_ = c.svc.Nodes.Remove(node)
 		return nil, err
 	}
 	created := srv.Created
 	if created.IsZero() || created.After(c.now()) {
 		created = c.now()
 	}
-	r := &model.CloudServer{Provider: p.Name(), ID: srv.ID, Name: name, Type: typ, Location: loc, Resources: srv.Resources,
+	r := &model.CloudServer{Provider: p.Name(), ID: srv.ID, Name: name, Node: node, Type: typ, Location: loc, Resources: srv.Resources,
 		State: model.CloudBooting, Created: created.Unix(), HourlyPrice: price.Hourly, Currency: price.Currency}
 	if err := c.svc.Store.AddCloudServer(r); err != nil {
 		// Reconcile finds it by its tag and deletes it.
@@ -677,7 +678,7 @@ func (c *Cloud) Drain(name string) error {
 		if r.Name != name {
 			continue
 		}
-		if err := c.svc.Nodes.SetPaused(name, true); err != nil && !errors.Is(err, model.ErrNotFound) {
+		if err := c.svc.Nodes.SetPaused(r.Node, true); err != nil && !errors.Is(err, model.ErrNotFound) {
 			return err
 		}
 		if r.State == model.CloudBooting || r.State == model.CloudReady {

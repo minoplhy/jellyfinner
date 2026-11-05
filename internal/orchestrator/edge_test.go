@@ -13,7 +13,7 @@ import (
 )
 
 func (f *fixture) edgeSetup(quota int64) {
-	if err := f.svc.Nodes.Add(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: quota}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{ID: "edge1", Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: quota}); err != nil {
 		panic(err)
 	}
 }
@@ -202,7 +202,7 @@ func TestProbeToleratesTrailingSlash(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	if err := f.svc.Nodes.Add(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: srv.URL + "/"}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{ID: "edge1", Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: srv.URL + "/"}); err != nil {
 		t.Fatal(err)
 	}
 	f.svc.probeNodes(context.Background())
@@ -220,7 +220,7 @@ func TestProbeUnderAPath(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	if err := f.svc.Nodes.Add(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: srv.URL + "/edge1"}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{ID: "edge1", Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: srv.URL + "/edge1"}); err != nil {
 		t.Fatal(err)
 	}
 	f.svc.probeNodes(context.Background())

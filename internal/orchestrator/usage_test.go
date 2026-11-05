@@ -146,7 +146,8 @@ func TestParseMonth(t *testing.T) {
 func (cf *cloudFixture) rented(provider, id, typ string, created, deleted time.Time, price float64, currency string) string {
 	cf.t.Helper()
 	name := "cloud-" + provider + "-" + id
-	r := &model.CloudServer{Provider: provider, ID: id, Name: name, Type: typ, Location: "l1", State: model.CloudDeleted,
+	// The node ID is the name here: the server's node was never registered.
+	r := &model.CloudServer{Provider: provider, ID: id, Name: name, Node: name, Type: typ, Location: "l1", State: model.CloudDeleted,
 		Created: created.Unix(), Deleted: deleted.Unix(), HourlyPrice: price, Currency: currency}
 	if err := cf.store.AddCloudServer(r); err != nil {
 		cf.t.Fatal(err)

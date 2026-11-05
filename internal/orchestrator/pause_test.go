@@ -12,9 +12,9 @@ import (
 func TestPauseNode(t *testing.T) {
 	f := newFixture(t)
 	for _, n := range []*model.Node{
-		{Name: "worker1", Kind: model.NodeWorker, TokenHash: "a"},
-		{Name: "worker2", Kind: model.NodeWorker, TokenHash: "b"},
-		{Name: "edge1", Kind: model.NodeEdge, TokenHash: "c", URL: "https://e", QuotaBytes: 1},
+		{ID: "worker1", Name: "worker1", Kind: model.NodeWorker, TokenHash: "a"},
+		{ID: "worker2", Name: "worker2", Kind: model.NodeWorker, TokenHash: "b"},
+		{ID: "edge1", Name: "edge1", Kind: model.NodeEdge, TokenHash: "c", URL: "https://e", QuotaBytes: 1},
 	} {
 		if err := f.svc.Nodes.Add(n); err != nil {
 			t.Fatal(err)
@@ -67,7 +67,7 @@ func TestPauseNode(t *testing.T) {
 func TestRequeueTakesAJobFromItsWorker(t *testing.T) {
 	f := newFixture(t)
 	for _, name := range []string{"worker1", "worker2"} {
-		if err := f.svc.Nodes.Add(&model.Node{Name: name, Kind: model.NodeWorker, TokenHash: name}); err != nil {
+		if err := f.svc.Nodes.Add(&model.Node{ID: name, Name: name, Kind: model.NodeWorker, TokenHash: name}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -121,9 +121,9 @@ func TestRequeueWithPauseDrainsACloudServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cf.seen[r.Name] = cf.now
+	cf.seen[r.Node] = cf.now
 	cf.queue("a", model.PriorityNew)
-	if j, _ := cf.store.Claim(r.Name, time.Hour); j == nil {
+	if j, _ := cf.store.Claim(r.Node, time.Hour); j == nil {
 		t.Fatal("the cloud server could not claim")
 	}
 	cf.tick()

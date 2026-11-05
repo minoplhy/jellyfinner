@@ -31,7 +31,7 @@ func (s *Server) leasedJob(w http.ResponseWriter, r *http.Request) (*model.Job, 
 		return nil, false
 	}
 	lease := r.Header.Get(control.LeaseHeader)
-	if err != nil || j.State != model.StateRunning || j.Node != nodeName(r) || lease == "" ||
+	if err != nil || j.State != model.StateRunning || j.Node != nodeID(r) || lease == "" ||
 		subtle.ConstantTimeCompare([]byte(lease), []byte(j.LeaseID)) != 1 {
 		http.Error(w, "lease lost", http.StatusConflict)
 		return nil, false

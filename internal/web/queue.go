@@ -65,20 +65,24 @@ type tab struct {
 }
 
 type queueData struct {
-	CSRF   string
-	Filter queueFilter
-	Query  template.URL // the current filter, for polling
-	Tabs   []tab
-	Jobs   []*model.Job
-	Total  int
-	First  int
-	Last   int
-	Prev   template.URL // query of the previous page, or ""
-	Next   template.URL
+	CSRF     string
+	Filter   queueFilter
+	NodeName string       // the filtered node's name
+	Query    template.URL // the current filter, for polling
+	Tabs     []tab
+	Jobs     []*model.Job
+	Total    int
+	First    int
+	Last     int
+	Prev     template.URL // query of the previous page, or ""
+	Next     template.URL
 }
 
 func (s *Server) queueData(csrf string, f queueFilter) (queueData, error) {
 	data := queueData{CSRF: csrf, Filter: f, Query: f.query(f.Page)}
+	if f.Node != "" {
+		data.NodeName = s.svc.NodeName(f.Node)
+	}
 	jobs, total, err := s.svc.Store.ListFiltered(model.JobFilter{State: f.State, Node: f.Node, Search: f.Search},
 		queueRows, (f.Page-1)*queueRows)
 	if err != nil {

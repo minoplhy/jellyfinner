@@ -170,17 +170,24 @@ type RequestStore interface {
 // NodeStore keeps the nodes allowed on the control API. It does no caching;
 // see the nodes package for that.
 type NodeStore interface {
-	// AddNode stores a new node, or returns model.ErrNodeExists.
+	// AddNode stores a new node, or returns model.ErrNodeExists when a live
+	// node has its name.
 	AddNode(n *model.Node) error
-	// RemoveNode deletes a node with its placements and status.
-	RemoveNode(name string) error
+	// UpdateNode saves a live node's name, allowed addresses, URL and quota,
+	// found by ID. A name another live node has returns model.ErrNodeExists.
+	UpdateNode(n *model.Node) error
+	// RemoveNode revokes a node and deletes its placements and status. The
+	// node keeps its name in history, and the name is free again.
+	RemoveNode(id string) error
 	// SetNodeToken replaces a node's token hash.
-	SetNodeToken(name, tokenHash string) error
+	SetNodeToken(id, tokenHash string) error
 	// SetNodePaused pauses or resumes a node. Claim gives a paused node no
 	// job; one it already holds runs to the end.
-	SetNodePaused(name string, paused bool) error
-	// LoadNodes reads every node, by name.
+	SetNodePaused(id string, paused bool) error
+	// LoadNodes reads every live node, by name.
 	LoadNodes() ([]model.Node, error)
+	// NodeNames maps every node ID to its name, removed nodes included.
+	NodeNames() (map[string]string, error)
 }
 
 // PlacementStore tracks encoded files on edge nodes, and what the nodes report.

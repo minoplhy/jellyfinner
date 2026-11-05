@@ -17,16 +17,26 @@ const (
 	downloadDeadline  = 48 * time.Hour
 )
 
-func nodeName(r *http.Request) string {
-	node, _ := r.Context().Value(nodeNameKey).(string)
+// nodeID is the ID of the node that made the request. Nodes never send it:
+// it comes from the token.
+func nodeID(r *http.Request) string {
+	node, _ := r.Context().Value(nodeIDKey).(string)
 	return node
+}
+
+// nodeLabel is a node's name for logs, or its ID if it is gone.
+func (s *Server) nodeLabel(id string) string {
+	if n := s.nodes.ByID(id); n != nil {
+		return n.Name
+	}
+	return id
 }
 
 // edgeOnly keeps node roles apart: an edge node can never take encode jobs,
 // and a worker can never reach edge orders or files.
 func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.nodes.Edge(nodeName(r)) == nil {
+		if s.nodes.Edge(nodeID(r)) == nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -36,7 +46,7 @@ func (s *Server) edgeOnly(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) workerOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.nodes.Edge(nodeName(r)) != nil {
+		if s.nodes.Edge(nodeID(r)) != nil {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
@@ -49,7 +59,7 @@ func (s *Server) edgePoll(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	node := nodeName(r)
+	node := nodeID(r)
 	if err := s.store.NodeSeen(node, req.DiskFree, req.DiskTotal); err != nil {
 		s.fail(w, err)
 		return
@@ -107,7 +117,7 @@ func (s *Server) edgeAck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	node := nodeName(r)
+	node := nodeID(r)
 	var err error
 	switch {
 	case req.Verb == control.VerbPull && req.Error == "":
@@ -120,7 +130,7 @@ func (s *Server) edgeAck(w http.ResponseWriter, r *http.Request) {
 	case req.Verb == control.VerbDelete && req.Error == "":
 		err = s.store.DeletePlacement(node, req.SHA256)
 	case req.Verb == control.VerbDelete:
-		s.log.Printf("node %s could not delete %s: %s", node, req.SHA256, req.Error)
+		s.log.Printf("node %s could not delete %s: %s", s.nodeLabel(node), req.SHA256, req.Error)
 	default:
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -136,7 +146,7 @@ func (s *Server) edgeAck(w http.ResponseWriter, r *http.Request) {
 // a matching token. The path comes from the database, never the request.
 func (s *Server) edgeFile(w http.ResponseWriter, r *http.Request) {
 	hash := r.PathValue("hash")
-	node := nodeName(r)
+	node := nodeID(r)
 	if !edge.ValidHash(hash) {
 		http.NotFound(w, r)
 		return

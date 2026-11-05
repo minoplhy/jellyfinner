@@ -304,8 +304,8 @@ func (c *Cloud) Estimate(ctx context.Context) (Estimate, error) {
 		hours := float64(cloud.BilledSteps(created, c.end(r), step)) * step.Hours()
 		m.hours += hours
 		m.cost += hours * r.HourlyPrice
-		m.jobs += work[r.Name].Jobs
-		m.bytes += work[r.Name].SourceBytes
+		m.jobs += work[r.Node].Jobs
+		m.bytes += work[r.Node].SourceBytes
 	}
 	for _, p := range c.providers {
 		for _, typ := range c.cfg.ProviderTypes(p.Name()) {

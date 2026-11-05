@@ -42,7 +42,7 @@ func router(envFile string) error {
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	registry := nodes.New(store, nil)
 	for user, node := range cfg.EdgeViewers {
-		if registry.Edge(node) == nil {
+		if registry.EdgeByName(node) == nil {
 			logger.Printf("EDGE_VIEWERS sends %s to %s, which is not an edge node yet, so they stay on the origin", user, node)
 		}
 	}

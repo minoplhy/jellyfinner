@@ -85,7 +85,7 @@ func newFixtureAt(t *testing.T, base string) *fixture {
 	logger := log.New(io.Discard, "", 0)
 	f.svc = orchestrator.New(cfg, store, notify.New("", ""), nil, logger)
 	f.svc.Now = clock
-	if err := f.svc.Nodes.Add(&model.Node{Name: "worker1", Kind: model.NodeWorker, TokenHash: "x"}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{ID: "worker1", Name: "worker1", Kind: model.NodeWorker, TokenHash: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	seen := func() map[string]time.Time { return map[string]time.Time{"worker1": f.now} }
@@ -180,14 +180,14 @@ func (f *fixture) post(c *http.Client, path string, form url.Values) (int, strin
 func TestEveryPageNeedsLogin(t *testing.T) {
 	f := newFixture(t)
 	c := f.client()
-	for _, path := range []string{"/", "/queue", "/library", "/nodes", "/usage", "/jobs/x", "/jobs/x/log"} {
+	for _, path := range []string{"/", "/queue", "/library", "/nodes", "/nodes/x/edit", "/usage", "/jobs/x", "/jobs/x/log"} {
 		got, _ := f.get(c, path)
 		if got != http.StatusSeeOther {
 			t.Errorf("GET %s = %d", path, got)
 		}
 	}
 	for _, path := range []string{"/library/add", "/library/reencode", "/library/reencode/confirm", "/jobs/x/cancel", "/jobs/x/requeue", "/logout",
-		"/scan", "/backfill/start", "/nodes/add", "/nodes/worker1/rotate", "/nodes/worker1/delete", "/nodes/worker1/pause", "/cloud/pause", "/cloud/servers/x/drain"} {
+		"/scan", "/backfill/start", "/nodes/add", "/nodes/worker1/rotate", "/nodes/worker1/delete", "/nodes/worker1/pause", "/nodes/worker1/edit", "/cloud/pause", "/cloud/servers/x/drain"} {
 		got, _ := f.post(c, path, url.Values{})
 		if got != http.StatusUnauthorized {
 			t.Errorf("POST %s = %d", path, got)
@@ -452,7 +452,7 @@ func TestDashboardShowsNodeAndBackfill(t *testing.T) {
 
 func TestNodesPageAndCacheAction(t *testing.T) {
 	f := newFixture(t)
-	if err := f.svc.Nodes.Add(&model.Node{Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: 1000}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{ID: "edge1", Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: "https://edge1.example.com", QuotaBytes: 1000}); err != nil {
 		t.Fatal(err)
 	}
 	f.add("a.mkv")
@@ -493,12 +493,12 @@ func TestNodesPageAndCacheAction(t *testing.T) {
 func TestNodeStatesAgreeAcrossPages(t *testing.T) {
 	f := newFixture(t)
 	for _, name := range []string{"edge1", "edge2", "edge3"} {
-		if err := f.svc.Nodes.Add(&model.Node{Name: name, Kind: model.NodeEdge, TokenHash: "x" + name, URL: "https://" + name + ".example.com", QuotaBytes: 1000}); err != nil {
+		if err := f.svc.Nodes.Add(&model.Node{ID: name, Name: name, Kind: model.NodeEdge, TokenHash: "x" + name, URL: "https://" + name + ".example.com", QuotaBytes: 1000}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// worker2 has made no call since the orchestrator started.
-	if err := f.svc.Nodes.Add(&model.Node{Name: "worker2", Kind: model.NodeWorker, TokenHash: "xw2"}); err != nil {
+	if err := f.svc.Nodes.Add(&model.Node{ID: "worker2", Name: "worker2", Kind: model.NodeWorker, TokenHash: "xw2"}); err != nil {
 		t.Fatal(err)
 	}
 	// edge1 reports and passes its probe, edge2 reports but fails it, and

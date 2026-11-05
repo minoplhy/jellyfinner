@@ -55,7 +55,7 @@ var (
 	// ErrLeaseLost means the caller no longer owns the job.
 	ErrLeaseLost = errors.New("job lease lost")
 	// ErrNotFound means no row matched.
-	ErrNotFound = errors.New("job not found")
+	ErrNotFound = errors.New("not found")
 	// ErrNodeExists means the name is taken.
 	ErrNodeExists = errors.New("node already exists")
 )
@@ -73,7 +73,8 @@ type Job struct {
 	State       string  `json:"state"`
 	Attempts    int     `json:"attempts"`
 	LeaseID     string  `json:"-"`
-	Node        string  `json:"node"`
+	Node        string  `json:"node"` // the node's ID
+	NodeName    string  `json:"-"`    // the node's name now, or its last one if removed
 	Stage       string  `json:"stage"`
 	Fraction    float64 `json:"fraction"`
 	Reason      string  `json:"reason"`
@@ -92,7 +93,7 @@ type Job struct {
 // matches part of the path, ignoring ASCII case.
 type JobFilter struct {
 	State  string
-	Node   string
+	Node   string // a node ID
 	Search string
 }
 
@@ -129,7 +130,10 @@ type Request struct {
 
 // Node is a worker or edge node allowed on the control API. An empty Allow list
 // accepts any source address. URL, QuotaBytes and SigningKey are edge only.
+// ID never changes and is what every other record refers to; Name is what
+// people type and see, and may be edited.
 type Node struct {
+	ID         string
 	Name       string
 	Kind       string
 	TokenHash  string
@@ -146,7 +150,7 @@ func (n *Node) Edge() bool { return n.Kind == NodeEdge }
 // Placement is one encoded file on one edge node. Files are identified by
 // content hash, so a re-encode can never be served from a stale copy.
 type Placement struct {
-	Node       string
+	Node       string // ID
 	SHA256     string
 	Output     string
 	Size       int64
@@ -180,7 +184,8 @@ const (
 type CloudServer struct {
 	Provider  string
 	ID        string // the provider's own ID
-	Name      string // also the node name
+	Name      string // the server's name at the provider, also its node's name
+	Node      string // the node's ID
 	Type      string
 	Location  string
 	Resources string // provider-specific extras to delete with it, such as an IP
@@ -207,7 +212,8 @@ type NodeWork struct {
 
 // JobOutcome is a finished, failed or cancelled job, for usage history.
 type JobOutcome struct {
-	Node       string
+	Node       string // ID
+	NodeName   string
 	State      string
 	SourceSize int64
 	Attempts   int

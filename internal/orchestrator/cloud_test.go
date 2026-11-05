@@ -370,12 +370,12 @@ func TestCloudLifecycle(t *testing.T) {
 
 	// It calls in, takes a job and finishes it.
 	cf.now = cf.now.Add(2 * time.Minute)
-	cf.seen[r.Name] = cf.now
+	cf.seen[r.Node] = cf.now
 	cf.tick()
 	if got := cf.servers()[0]; got.State != model.CloudReady || got.FirstSeen == 0 {
 		t.Fatalf("after calling in: %+v", got)
 	}
-	j, err := cf.store.Claim(r.Name, time.Hour)
+	j, err := cf.store.Claim(r.Node, time.Hour)
 	if err != nil || j == nil {
 		t.Fatalf("claim = %v, %v", j, err)
 	}
@@ -472,9 +472,9 @@ func TestCloudDrainWaitsForTheJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	cf.queue("a", model.PriorityNew)
-	cf.seen[r.Name] = cf.now
+	cf.seen[r.Node] = cf.now
 	cf.tick()
-	j, _ := cf.store.Claim(r.Name, time.Hour)
+	j, _ := cf.store.Claim(r.Node, time.Hour)
 	if j == nil {
 		t.Fatal("no job")
 	}
@@ -482,7 +482,7 @@ func TestCloudDrainWaitsForTheJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	cf.queue("b", model.PriorityNew)
-	if j2, _ := cf.store.Claim(r.Name, time.Hour); j2 != nil {
+	if j2, _ := cf.store.Claim(r.Node, time.Hour); j2 != nil {
 		t.Error("a draining server claimed another job")
 	}
 	cf.tick()
@@ -502,9 +502,9 @@ func TestCloudDrainWaitsForTheJob(t *testing.T) {
 func TestCloudPausingACloudNodeDrainsIt(t *testing.T) {
 	cf := newCloud(t, "alpha")
 	r, _ := cf.cloud.Start(context.Background(), "")
-	cf.seen[r.Name] = cf.now
+	cf.seen[r.Node] = cf.now
 	cf.tick()
-	if err := cf.svc.PauseNode(r.Name); err != nil {
+	if err := cf.svc.PauseNode(r.Node); err != nil {
 		t.Fatal(err)
 	}
 	cf.tick()
@@ -560,7 +560,7 @@ func TestCloudReconcile(t *testing.T) {
 	}
 
 	// A leftover cloud node with no server goes after two reconciles.
-	if _, err := cf.svc.AddNode(NodeSpec{Name: "cloud-alpha-stray"}); err != nil {
+	if _, err := cf.svc.addCloudNode("cloud-alpha-stray"); err != nil {
 		t.Fatal(err)
 	}
 	cf.cloud.Reconcile(ctx)
@@ -609,7 +609,7 @@ func TestCloudUsageAndEstimate(t *testing.T) {
 	a, _ := cf.cloud.Start(ctx, "alpha")
 	b, _ := cf.cloud.Start(ctx, "beta")
 	cf.queue("done1", model.PriorityNew)
-	j, _ := cf.store.Claim(a.Name, time.Hour)
+	j, _ := cf.store.Claim(a.Node, time.Hour)
 	cf.store.Complete(j.ID, j.LeaseID, "{}", "")
 	cf.store.MarkDone(j.ID)
 	cf.now = cf.now.Add(90 * time.Minute)

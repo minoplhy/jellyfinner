@@ -139,6 +139,41 @@ var migrations = []string{
 	// 3: when a job's last attempt was claimed and handed back, for measured speed.
 	`ALTER TABLE jobs ADD COLUMN started INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE jobs ADD COLUMN finished INTEGER NOT NULL DEFAULT 0;`,
+	// 4: nodes get an ID that never changes, so a name can be edited. Every
+	// reference moves from the name to the ID. A removed node stays as a row
+	// with removed set, so old jobs still show its name; names seen only in
+	// history become such rows too.
+	`CREATE TABLE nodes_v4 (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL,
+		kind        TEXT NOT NULL,
+		token_hash  TEXT NOT NULL DEFAULT '',
+		allow       TEXT NOT NULL DEFAULT '',
+		url         TEXT NOT NULL DEFAULT '',
+		quota_bytes INTEGER NOT NULL DEFAULT 0,
+		signing_key TEXT NOT NULL DEFAULT '',
+		created     INTEGER NOT NULL,
+		paused      INTEGER NOT NULL DEFAULT 0,
+		removed     INTEGER NOT NULL DEFAULT 0
+	);
+	INSERT INTO nodes_v4 (id, name, kind, token_hash, allow, url, quota_bytes, signing_key, created, paused)
+		SELECT lower(hex(randomblob(8))), name, kind, token_hash, allow, url, quota_bytes, signing_key, created, paused FROM nodes;
+	INSERT INTO nodes_v4 (id, name, kind, created, removed)
+		SELECT lower(hex(randomblob(8))), name, 'worker', 0, 1 FROM (
+			SELECT node AS name FROM jobs WHERE node != ''
+			UNION SELECT name FROM cloud_servers
+			UNION SELECT node FROM placements
+			UNION SELECT node FROM edge_status
+		) WHERE name NOT IN (SELECT name FROM nodes);
+	UPDATE jobs SET node = (SELECT id FROM nodes_v4 WHERE nodes_v4.name = jobs.node) WHERE node != '';
+	UPDATE placements SET node = (SELECT id FROM nodes_v4 WHERE nodes_v4.name = placements.node);
+	UPDATE edge_status SET node = (SELECT id FROM nodes_v4 WHERE nodes_v4.name = edge_status.node);
+	ALTER TABLE cloud_servers ADD COLUMN node TEXT NOT NULL DEFAULT '';
+	UPDATE cloud_servers SET node = (SELECT id FROM nodes_v4 WHERE nodes_v4.name = cloud_servers.name);
+	DROP TABLE nodes;
+	ALTER TABLE nodes_v4 RENAME TO nodes;
+	CREATE UNIQUE INDEX nodes_live_name ON nodes (name) WHERE removed = 0;
+	CREATE INDEX jobs_node ON jobs (node, state);`,
 }
 
 // migrate applies whichever steps this database has not had. The transaction

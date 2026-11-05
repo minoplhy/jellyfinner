@@ -2,6 +2,8 @@ package web
 
 import (
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 
 // workerView is an encoding node on the Nodes page.
 type workerView struct {
+	ID     string
 	Name   string
 	Paused bool
 	State  nodeState
@@ -89,10 +92,10 @@ func (s *Server) nodesData(csrf string) (nodesData, error) {
 		if n.Edge() {
 			continue
 		}
-		v := workerView{Name: n.Name, Paused: n.Paused, Seen: seen[n.Name], Failed: failed[n.Name]}
+		v := workerView{ID: n.ID, Name: n.Name, Paused: n.Paused, Seen: seen[n.ID], Failed: failed[n.ID]}
 		v.State = s.workerState(v.Seen, n.Paused)
 		for _, j := range jobs {
-			if active(j) && j.Node == n.Name {
+			if active(j) && j.Node == n.ID {
 				v.Active = append(v.Active, j)
 			}
 		}
@@ -139,7 +142,7 @@ func (s *Server) nodesFragment(w http.ResponseWriter, r *http.Request, sess *ses
 
 // nodeRemove deletes a cached title from an edge node.
 func (s *Server) nodeRemove(w http.ResponseWriter, r *http.Request, sess *session) {
-	msg := flashMsg{"ok", "Removing it from " + r.PathValue("node") + "."}
+	msg := flashMsg{"ok", "Removing it from " + s.svc.NodeName(r.PathValue("node")) + "."}
 	if err := s.svc.UnpinOutput(r.PostForm.Get("output"), r.PathValue("node"), r.PostForm.Get("force") != ""); err != nil {
 		msg = flashMsg{"error", err.Error()}
 	}
@@ -203,8 +206,9 @@ func (s *Server) nodeAdd(w http.ResponseWriter, r *http.Request, sess *session) 
 }
 
 func (s *Server) nodeRotate(w http.ResponseWriter, r *http.Request, sess *session) {
-	name := r.PathValue("node")
-	token, err := s.svc.RotateNodeToken(name)
+	id := r.PathValue("node")
+	name := s.svc.NodeName(id)
+	token, err := s.svc.RotateNodeToken(id)
 	if err != nil {
 		s.flash(sess, "error", err.Error())
 		s.redirect(w, r, "/nodes")
@@ -264,15 +268,16 @@ func (s *Server) finishCloud(w http.ResponseWriter, r *http.Request, sess *sessi
 
 // nodePause pauses or resumes a worker, as orchestrator node pause does.
 func (s *Server) nodePause(w http.ResponseWriter, r *http.Request, sess *session) {
-	name, action := r.PathValue("node"), r.PathValue("action")
+	id, action := r.PathValue("node"), r.PathValue("action")
+	name := s.svc.NodeName(id)
 	var err error
 	var msg flashMsg
 	switch action {
 	case "pause":
-		err = s.svc.PauseNode(name)
+		err = s.svc.PauseNode(id)
 		msg = flashMsg{"ok", "Paused " + name + ". A job it holds runs to the end, then it takes no more."}
 	case "resume":
-		err = s.svc.ResumeNode(name)
+		err = s.svc.ResumeNode(id)
 		msg = flashMsg{"ok", "Resumed " + name + "."}
 	default:
 		http.NotFound(w, r)
@@ -293,12 +298,81 @@ func (s *Server) nodePause(w http.ResponseWriter, r *http.Request, sess *session
 
 // nodeDelete revokes a node, as orchestrator node remove does.
 func (s *Server) nodeDelete(w http.ResponseWriter, r *http.Request, sess *session) {
-	name := r.PathValue("node")
-	if err := s.svc.Nodes.Remove(name); err != nil {
+	id := r.PathValue("node")
+	name := s.svc.NodeName(id)
+	if err := s.svc.Nodes.Remove(id); err != nil {
 		s.flash(sess, "error", err.Error())
 	} else {
 		s.log.Printf("web: %s removed node %s", sess.user, name)
 		s.flash(sess, "ok", "Removed "+name+". Its token no longer works.")
+	}
+	s.redirect(w, r, "/nodes")
+}
+
+// nodeEditData is the edit form for one node. It is a page of its own,
+// because the Nodes page refreshes and would wipe a half-typed form.
+type nodeEditData struct {
+	CSRF    string
+	ID      string
+	Name    string
+	Edge    bool
+	Rented  bool
+	Allow   string
+	URL     string
+	QuotaGB int64
+	Viewers []string // EDGE_VIEWERS users sent here, by name
+}
+
+func (s *Server) nodeEditPage(w http.ResponseWriter, r *http.Request, sess *session) {
+	n, err := s.svc.NodeByID(r.PathValue("node"))
+	if err != nil {
+		s.flash(sess, "error", err.Error())
+		s.redirect(w, r, "/nodes")
+		return
+	}
+	d := nodeEditData{CSRF: sess.csrf, ID: n.ID, Name: n.Name, Edge: n.Edge(), Rented: orchestrator.Rented(n),
+		Allow: orchestrator.AllowString(n.Allow), URL: n.URL, QuotaGB: n.QuotaBytes / 1e9}
+	for user, edge := range s.svc.Cfg.EdgeViewers {
+		if n.Edge() && edge == n.Name {
+			d.Viewers = append(d.Viewers, user)
+		}
+	}
+	sort.Strings(d.Viewers)
+	s.render(w, sess, "nodeedit", "Edit "+n.Name, d)
+}
+
+// nodeEdit saves the edit form, as orchestrator node edit does. Allowed
+// addresses are always sent, so emptying the box accepts any address.
+func (s *Server) nodeEdit(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("node")
+	back := "/nodes/" + url.PathEscape(id) + "/edit"
+	name := strings.TrimSpace(r.PostForm.Get("name"))
+	allow := strings.TrimSpace(r.PostForm.Get("allow"))
+	e := orchestrator.NodeEdit{Name: &name, Allow: &allow}
+	if r.PostForm.Has("url") {
+		u := strings.TrimSpace(r.PostForm.Get("url"))
+		e.URL = &u
+	}
+	if r.PostForm.Has("quota_gb") {
+		quota, err := strconv.ParseInt(strings.TrimSpace(r.PostForm.Get("quota_gb")), 10, 64)
+		if err != nil {
+			s.flash(sess, "error", "The quota must be a whole number of GB.")
+			s.redirect(w, r, back)
+			return
+		}
+		e.QuotaGB = &quota
+	}
+	n, warnings, err := s.svc.EditNode(id, e)
+	if err != nil {
+		s.flash(sess, "error", "Could not save: "+err.Error())
+		s.redirect(w, r, back)
+		return
+	}
+	s.log.Printf("web: %s edited node %s", sess.user, n.Name)
+	if len(warnings) > 0 {
+		s.flash(sess, "warn", "Saved "+n.Name+". "+strings.Join(warnings, ". ")+".")
+	} else {
+		s.flash(sess, "ok", "Saved "+n.Name+". It takes effect within seconds, with no change on the node.")
 	}
 	s.redirect(w, r, "/nodes")
 }

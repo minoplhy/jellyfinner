@@ -10,6 +10,7 @@ import (
 
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/model"
+	"jellyfinner/internal/orchestrator"
 )
 
 // hx sends a request the way htmx does, from a page at current.
@@ -212,16 +213,18 @@ func TestAddRotateAndRemoveNodesFromTheWeb(t *testing.T) {
 	if m == nil {
 		t.Fatalf("no token shown: %s", body)
 	}
-	if n := f.svc.Nodes.ByToken(m[1]); n == nil || n.Name != "worker2" || n.Edge() {
-		t.Errorf("the shown token must work: %+v", n)
+	n := f.svc.Nodes.ByToken(m[1])
+	if n == nil || n.Name != "worker2" || n.Edge() {
+		t.Fatalf("the shown token must work: %+v", n)
 	}
+	worker := n.ID
 
 	code, body = f.post(c, "/nodes/add", url.Values{"csrf": {token}, "kind": {"edge"}, "name": {"edge9"},
 		"url": {"https://edge9.example.com/"}, "quota_gb": {"50"}})
 	if code != http.StatusOK || !strings.Contains(body, "EDGE_SIGNING_KEY: ") {
 		t.Fatalf("add edge = %d: %s", code, body)
 	}
-	if n := f.svc.Nodes.Edge("edge9"); n == nil || n.URL != "https://edge9.example.com" || n.QuotaBytes != 50e9 {
+	if n := f.svc.Nodes.EdgeByName("edge9"); n == nil || n.URL != "https://edge9.example.com" || n.QuotaBytes != 50e9 {
 		t.Errorf("edge = %+v", n)
 	}
 
@@ -240,7 +243,7 @@ func TestAddRotateAndRemoveNodesFromTheWeb(t *testing.T) {
 		t.Error("a refused node must say why")
 	}
 
-	code, body = f.post(c, "/nodes/worker2/rotate", url.Values{"csrf": {token}})
+	code, body = f.post(c, "/nodes/"+worker+"/rotate", url.Values{"csrf": {token}})
 	m2 := nodeToken.FindStringSubmatch(body)
 	if code != http.StatusOK || m2 == nil || m2[1] == m[1] || strings.Contains(body, "ORCHESTRATOR_URL") {
 		t.Fatalf("rotate = %d: %s", code, body)
@@ -249,7 +252,7 @@ func TestAddRotateAndRemoveNodesFromTheWeb(t *testing.T) {
 		t.Error("rotate must replace the token")
 	}
 
-	if got, _ := f.post(c, "/nodes/worker2/delete", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
+	if got, _ := f.post(c, "/nodes/"+worker+"/delete", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
 		t.Errorf("delete = %d", got)
 	}
 	if f.svc.Nodes.ByToken(m2[1]) != nil {
@@ -257,6 +260,77 @@ func TestAddRotateAndRemoveNodesFromTheWeb(t *testing.T) {
 	}
 	if got, _ := f.post(c, "/nodes/nope/delete", url.Values{"csrf": {token}}); got != http.StatusSeeOther {
 		t.Errorf("delete unknown = %d", got)
+	}
+}
+
+func TestEditNodesFromTheWeb(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.EdgeViewers = map[string]string{"alice": "edge9"}
+	c := f.admin()
+	token := f.csrf(c)
+	worker, err := f.svc.AddNode(orchestrator.NodeSpec{Name: "worker2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge, err := f.svc.AddNode(orchestrator.NodeSpec{Name: "edge9", Edge: true, URL: "https://edge9.example.com", QuotaGB: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wid, eid := worker.Node.ID, edge.Node.ID
+
+	if _, body := f.get(c, "/nodes"); !strings.Contains(body, "/nodes/"+wid+"/edit") || !strings.Contains(body, "/nodes/"+eid+"/edit") {
+		t.Error("the Nodes page must link to each node's edit page")
+	}
+	code, body := f.get(c, "/nodes/"+wid+"/edit")
+	if code != http.StatusOK || !strings.Contains(body, `value="worker2"`) || strings.Contains(body, `name="url"`) {
+		t.Fatalf("worker edit page = %d: %s", code, body)
+	}
+	code, body = f.get(c, "/nodes/"+eid+"/edit")
+	if code != http.StatusOK || !strings.Contains(body, `value="https://edge9.example.com"`) || !strings.Contains(body, `value="50"`) ||
+		!strings.Contains(body, "alice") {
+		t.Fatalf("edge edit page = %d: %s", code, body)
+	}
+
+	code, _ = f.post(c, "/nodes/"+wid+"/edit", url.Values{"csrf": {token}, "name": {"gpu-box"}, "allow": {"10.8.0.0/24"}})
+	if code != http.StatusSeeOther {
+		t.Fatalf("edit worker = %d", code)
+	}
+	if n := f.svc.Nodes.ByToken(worker.Token); n == nil || n.ID != wid || n.Name != "gpu-box" || orchestrator.AllowString(n.Allow) != "10.8.0.0/24" {
+		t.Errorf("edited worker = %+v", n)
+	}
+	if _, body := f.get(c, "/nodes"); !strings.Contains(body, "Saved gpu-box") || !strings.Contains(body, "gpu-box") {
+		t.Error("the Nodes page must confirm the edit")
+	}
+
+	code, _ = f.post(c, "/nodes/"+eid+"/edit", url.Values{"csrf": {token}, "name": {"edge-paris"}, "allow": {""},
+		"url": {"https://example.com/edge9"}, "quota_gb": {"20"}})
+	if code != http.StatusSeeOther {
+		t.Fatalf("edit edge = %d", code)
+	}
+	if n := f.svc.Nodes.Edge(eid); n == nil || n.Name != "edge-paris" || n.URL != "https://example.com/edge9" || n.QuotaBytes != 20e9 {
+		t.Errorf("edited edge = %+v", n)
+	}
+	if _, body := f.get(c, "/nodes"); !strings.Contains(body, "flash-warn") || !strings.Contains(body, "EDGE_VIEWERS still sends alice") {
+		t.Error("renaming an edge EDGE_VIEWERS uses must warn")
+	}
+
+	for _, bad := range []url.Values{
+		{"name": {"Bad Name"}},
+		{"name": {"edge-paris"}},
+		{"name": {"gpu-box"}, "allow": {"nonsense"}},
+		{"name": {"gpu-box"}, "url": {"https://x.example.com"}},
+	} {
+		bad.Set("csrf", token)
+		code, _ := f.post(c, "/nodes/"+wid+"/edit", bad)
+		if code != http.StatusSeeOther {
+			t.Errorf("bad edit %v = %d", bad, code)
+		}
+		if _, body := f.get(c, "/nodes/"+wid+"/edit"); !strings.Contains(body, "flash-error") {
+			t.Errorf("bad edit %v must say why on the edit page", bad)
+		}
+	}
+	if n := f.svc.Nodes.ByID(wid); n == nil || n.Name != "gpu-box" {
+		t.Errorf("a refused edit changed the node: %+v", n)
 	}
 }
 

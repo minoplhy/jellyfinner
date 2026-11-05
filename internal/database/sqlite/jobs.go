@@ -14,13 +14,17 @@ import (
 
 const jobColumns = `id, path, output_path, source_size, source_mtime, revision, profile, priority,
 	state, attempts, lease_id, node, stage, fraction, reason, force_encode, software,
-	error, log, manifest, created, updated, started, finished`
+	error, log, manifest, created, updated, started, finished, ` + nodeNameColumn
+
+// nodeNameColumn is the name of a job's node, which may have been renamed or
+// removed since. A correlated subquery keeps every FROM jobs query unchanged.
+const nodeNameColumn = `COALESCE((SELECT nodes.name FROM nodes WHERE nodes.id = jobs.node), jobs.node)`
 
 func scanJob(row interface{ Scan(...any) error }) (*model.Job, error) {
 	var j model.Job
 	err := row.Scan(&j.ID, &j.Path, &j.OutputPath, &j.SourceSize, &j.SourceMtime, &j.Revision, &j.Profile, &j.Priority,
 		&j.State, &j.Attempts, &j.LeaseID, &j.Node, &j.Stage, &j.Fraction, &j.Reason, &j.ForceEncode, &j.Software,
-		&j.Error, &j.Log, &j.Manifest, &j.Created, &j.Updated, &j.Started, &j.Finished)
+		&j.Error, &j.Log, &j.Manifest, &j.Created, &j.Updated, &j.Started, &j.Finished, &j.NodeName)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +142,7 @@ func (s *Store) WorkByNode(since time.Time) (map[string]model.NodeWork, error) {
 // Outcomes returns jobs that ended in [from, to): published, failed or
 // cancelled. A published job's updated time is when it reached the library.
 func (s *Store) Outcomes(from, to time.Time) ([]model.JobOutcome, error) {
-	rows, err := s.db.Query(`SELECT node, state, source_size, attempts, started, finished, updated, manifest
+	rows, err := s.db.Query(`SELECT node, `+nodeNameColumn+`, state, source_size, attempts, started, finished, updated, manifest
 		FROM jobs WHERE state IN (?, ?, ?) AND updated >= ? AND updated < ? ORDER BY updated`,
 		model.StateDone, model.StateFailed, model.StateCancelled, from.Unix(), to.Unix())
 	if err != nil {
@@ -148,7 +152,7 @@ func (s *Store) Outcomes(from, to time.Time) ([]model.JobOutcome, error) {
 	var out []model.JobOutcome
 	for rows.Next() {
 		var o model.JobOutcome
-		if err := rows.Scan(&o.Node, &o.State, &o.SourceSize, &o.Attempts, &o.Started, &o.Finished, &o.Updated, &o.Manifest); err != nil {
+		if err := rows.Scan(&o.Node, &o.NodeName, &o.State, &o.SourceSize, &o.Attempts, &o.Started, &o.Finished, &o.Updated, &o.Manifest); err != nil {
 			return nil, err
 		}
 		out = append(out, o)
@@ -209,10 +213,11 @@ func (s *Store) Claim(node string, leaseFor time.Duration) (*model.Job, error) {
 	var claimed *model.Job
 	err := s.tx(func(tx *sql.Tx) error {
 		// Checked in the same transaction, so a pause holds from the moment it
-		// is set, with no window for one more job. A name with no row, such
+		// is set, with no window for one more job. An ID with no row, such
 		// as in tests, is not paused.
 		var paused bool
-		err := tx.QueryRow(`SELECT paused FROM nodes WHERE name = ?`, node).Scan(&paused)
+		name := node
+		err := tx.QueryRow(`SELECT paused, name FROM nodes WHERE id = ? AND removed = 0`, node).Scan(&paused, &name)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -238,7 +243,7 @@ func (s *Store) Claim(node string, leaseFor time.Duration) (*model.Job, error) {
 			return err
 		}
 		j.LeaseID = hex.EncodeToString(lease)
-		j.Node = node
+		j.Node, j.NodeName = node, name
 		j.Attempts++
 		j.State = model.StateRunning
 		now := s.now()

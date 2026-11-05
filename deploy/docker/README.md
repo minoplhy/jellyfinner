@@ -66,11 +66,21 @@ Changes reach running services within about 10 seconds, with no restart.
 
 ```sh
 docker compose exec orchestrator orchestrator node list
+docker compose exec orchestrator orchestrator node edit worker1 --name gpu-box --allow 10.8.0.0/24
+docker compose exec orchestrator orchestrator node edit edge1 --url https://example.com/edge1 --quota-gb 200
 docker compose exec orchestrator orchestrator node rotate worker1
 docker compose exec orchestrator orchestrator node remove worker1
 ```
 
-`node remove` revokes the node and forgets what it cached. Files stay on an edge node's disk until you delete them.
+`node edit` changes only what you give it, and the Nodes page has an Edit button for the same. The node keeps its token and signing key, so nothing changes in its compose file:
+
+- **Name:** jobs, usage history and cached titles follow the node through a rename, because they refer to its ID, shown by `node list`. `EDGE_VIEWERS` names edge nodes, so after renaming one, change it there too.
+- **Allowed addresses:** `--allow ""` accepts any address.
+- **Edge URL and quota:** a new URL, such as moving the node under a path behind your proxy, is used for the next redirect and health probe. A smaller quota removes nothing; the node just caches no new title until it holds less.
+
+Rented servers' nodes are managed by the cloud scaler and cannot be edited. Names starting with `cloud-` are kept for them.
+
+`node remove` revokes the node and forgets what it cached. Files stay on an edge node's disk until you delete them. Old jobs keep showing its name, and the name is free for a new node.
 
 To stop a worker taking new jobs, pause it. It finishes the job it holds, then takes nothing until resumed. The pause is kept across restarts, and the Nodes page has the same buttons.
 

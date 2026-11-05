@@ -160,7 +160,7 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 	if err != nil {
 		return "", err
 	}
-	node := rt.nodes.Edge(rt.cfg.EdgeViewers[user])
+	node := rt.nodes.EdgeByName(rt.cfg.EdgeViewers[user])
 	if node == nil {
 		return "", nil
 	}
@@ -174,14 +174,14 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 	if !ok {
 		return "", nil
 	}
-	p, err := rt.store.ActivePlacement(output, node.Name)
+	p, err := rt.store.ActivePlacement(output, node.ID)
 	if errors.Is(err, model.ErrNotFound) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	status, err := rt.store.GetNodeStatus(node.Name)
+	status, err := rt.store.GetNodeStatus(node.ID)
 	if err != nil {
 		return "", err
 	}
@@ -189,7 +189,7 @@ func (rt *Router) resolve(ctx context.Context, itemID, token string) (string, er
 	if !Servable(status, now) {
 		return "", nil
 	}
-	if err := rt.store.TouchPlacement(node.Name, p.SHA256); err != nil {
+	if err := rt.store.TouchPlacement(node.ID, p.SHA256); err != nil {
 		rt.log.Printf("router, record play: %v", err)
 	}
 	return edge.SignURL(node.URL, node.SigningKey, p.SHA256, now.Add(rt.cfg.EdgeURLTTL)), nil

@@ -22,10 +22,10 @@ import (
 )
 
 const (
-	maxBody     = 1 << 20
-	authLimit   = 10
-	authWindow  = time.Minute
-	nodeNameKey = contextKey("node")
+	maxBody    = 1 << 20
+	authLimit  = 10
+	authWindow = time.Minute
+	nodeIDKey  = contextKey("node")
 )
 
 type contextKey string
@@ -106,12 +106,12 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		s.markSeen(node.Name)
+		s.markSeen(node.ID)
 		// Uploads carry a whole file and set their own limit.
 		if r.Method != http.MethodPut {
 			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		}
-		ctx := context.WithValue(r.Context(), nodeNameKey, node.Name)
+		ctx := context.WithValue(r.Context(), nodeIDKey, node.ID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -120,10 +120,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 // a job to find out could take real work.
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	kind := model.NodeWorker
-	if s.nodes.Edge(nodeName(r)) != nil {
+	if s.nodes.Edge(nodeID(r)) != nil {
 		kind = model.NodeEdge
 	}
-	writeJSON(w, control.WhoAmIResponse{Name: nodeName(r), Kind: kind})
+	writeJSON(w, control.WhoAmIResponse{Name: s.nodeLabel(nodeID(r)), Kind: kind})
 }
 
 func (s *Server) markSeen(node string) {
@@ -132,7 +132,7 @@ func (s *Server) markSeen(node string) {
 	s.seen[node] = s.Now()
 }
 
-// LastSeen returns when each node last made an authenticated call.
+// LastSeen returns when each node, by ID, last made an authenticated call.
 func (s *Server) LastSeen() map[string]time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,7 +181,7 @@ func (s *Server) recordFailure(addr netip.Addr) {
 }
 
 func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
-	node, _ := r.Context().Value(nodeNameKey).(string)
+	node, _ := r.Context().Value(nodeIDKey).(string)
 	j, err := s.store.Claim(node, s.cfg.LeaseFor)
 	if err != nil {
 		s.fail(w, err)

@@ -51,6 +51,7 @@ func (s *Server) edgeState(st model.NodeStatus) nodeState {
 
 // dashNode is one line of the dashboard's node list.
 type dashNode struct {
+	ID    string
 	Name  string
 	Role  string
 	State nodeState
@@ -82,9 +83,9 @@ func (s *Server) dashboardData(csrf string) (dashboardData, error) {
 		Budget: budget, BudgetLow: budget / 100 * 80, BudgetHigh: budget / 100 * 95}
 	seen := s.lastSeen()
 	for _, node := range s.svc.Nodes.All() {
-		row := dashNode{Name: node.Name, Role: "encoding", Seen: seen[node.Name]}
+		row := dashNode{ID: node.ID, Name: node.Name, Role: "encoding", Seen: seen[node.ID]}
 		if node.Edge() {
-			st, err := s.svc.Store.GetNodeStatus(node.Name)
+			st, err := s.svc.Store.GetNodeStatus(node.ID)
 			if err != nil {
 				return data, err
 			}

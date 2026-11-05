@@ -5,12 +5,13 @@ import (
 	"net/url"
 	"strings"
 
+	"jellyfinner/internal/model"
 	"jellyfinner/internal/orchestrator"
 )
 
 type libraryData struct {
 	CSRF   string
-	Nodes  []string
+	Nodes  []model.Node // edge nodes, for the cache picker
 	Search string
 	Rows   []orchestrator.TitleRow
 	Total  int
@@ -21,11 +22,7 @@ func (s *Server) libraryData(csrf, search string) (libraryData, error) {
 	if err != nil {
 		return libraryData{}, err
 	}
-	var nodes []string
-	for _, n := range s.svc.Nodes.Edges() {
-		nodes = append(nodes, n.Name)
-	}
-	return libraryData{CSRF: csrf, Nodes: nodes, Search: search, Rows: rows, Total: total}, nil
+	return libraryData{CSRF: csrf, Nodes: s.svc.Nodes.Edges(), Search: search, Rows: rows, Total: total}, nil
 }
 
 func (s *Server) libraryPage(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -99,7 +96,7 @@ func (s *Server) libraryCache(w http.ResponseWriter, r *http.Request, sess *sess
 		}
 		done++
 	}
-	s.libraryDone(w, r, sess, summary("sent to "+node, done, errs))
+	s.libraryDone(w, r, sess, summary("sent to "+s.svc.NodeName(node), done, errs))
 }
 
 type confirmData struct {

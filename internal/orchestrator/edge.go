@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -19,12 +20,13 @@ const (
 	recentPlay = 24 * time.Hour
 )
 
-// Pin orders a node to cache a finished encode.
+// Pin orders a node, by ID, to cache a finished encode.
 func (s *Service) Pin(sourcePath, node string) error {
 	n := s.Nodes.Edge(node)
 	if n == nil {
 		return fmt.Errorf("unknown edge node %q", node)
 	}
+	name := n.Name
 	src, err := s.Store.Source(sourcePath)
 	if err != nil {
 		return fmt.Errorf("%s: %w", sourcePath, err)
@@ -40,7 +42,7 @@ func (s *Service) Pin(sourcePath, node string) error {
 	}
 	for _, p := range existing {
 		if p.Node == node && p.SHA256 == src.EncodedSHA256 && p.State != model.PlacementFailed {
-			return fmt.Errorf("%s is already %s on %s", sourcePath, p.State, node)
+			return fmt.Errorf("%s is already %s on %s", sourcePath, p.State, name)
 		}
 	}
 	if err := s.checkQuota(n, src.EncodedBytes); err != nil {
@@ -50,7 +52,7 @@ func (s *Service) Pin(sourcePath, node string) error {
 }
 
 func (s *Service) checkQuota(n *model.Node, size int64) error {
-	used, err := s.Store.NodeUsed(n.Name)
+	used, err := s.Store.NodeUsed(n.ID)
 	if err != nil {
 		return err
 	}
@@ -60,7 +62,7 @@ func (s *Service) checkQuota(n *model.Node, size int64) error {
 	return nil
 }
 
-// Unpin removes a title from a node. Viewers already watching it would fail on
+// Unpin removes a title from a node, by ID. Viewers already watching it would fail on
 // their next seek, so a recently played title needs force.
 func (s *Service) Unpin(sourcePath, node string, force bool) error {
 	return s.UnpinOutput(OutputPath(sourcePath), node, force)
@@ -79,14 +81,14 @@ func (s *Service) UnpinOutput(output, node string, force bool) error {
 		}
 		found = true
 		if !force && p.LastPlayed != 0 && s.Now().Unix()-p.LastPlayed < int64(recentPlay.Seconds()) {
-			return fmt.Errorf("%s was played on %s recently, and a viewer's next seek would fail: use force to remove it", output, node)
+			return fmt.Errorf("%s was played on %s recently, and a viewer's next seek would fail: use force to remove it", output, s.NodeName(node))
 		}
 		if err := s.Store.SetPlacementState(node, p.SHA256, model.PlacementDeleting, ""); err != nil {
 			return err
 		}
 	}
 	if !found {
-		return fmt.Errorf("%s is not on %s", output, node)
+		return fmt.Errorf("%s is not on %s", output, s.NodeName(node))
 	}
 	return nil
 }
@@ -143,10 +145,19 @@ func (s *Service) probeNodes(ctx context.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	for _, n := range s.Nodes.Edges() {
 		healthy := probe(ctx, client, strings.TrimSuffix(n.URL, "/")+"/health")
-		if err := s.Store.SetNodeHealth(n.Name, healthy); err != nil {
+		if err := s.Store.SetNodeHealth(n.ID, healthy); err != nil {
 			s.Log.Printf("node health %s: %v", n.Name, err)
 		}
 	}
+}
+
+// AllowString writes allowed addresses as node add and node edit take them.
+func AllowString(prefixes []netip.Prefix) string {
+	out := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		out[i] = p.String()
+	}
+	return strings.Join(out, ", ")
 }
 
 func probe(ctx context.Context, client *http.Client, url string) bool {
@@ -163,14 +174,16 @@ func probe(ctx context.Context, client *http.Client, url string) bool {
 }
 
 // EdgeCopyFailed tells the operator, because nothing retries on its own: a node
-// that keeps failing must not keep pulling.
+// that keeps failing must not keep pulling. node is an ID.
 func (s *Service) EdgeCopyFailed(ctx context.Context, node, sha256, reason string) {
-	s.send(ctx, fmt.Sprintf("Edge copy failed on %s: %s (file %.12s). Viewers stay on the origin until it is pinned again.", node, reason, sha256))
+	s.send(ctx, fmt.Sprintf("Edge copy failed on %s: %s (file %.12s). Viewers stay on the origin until it is pinned again.", s.NodeName(node), reason, sha256))
 }
 
 // NodeRow is one node in the UI.
 type NodeRow struct {
+	ID         string
 	Name       string
+	Allow      string // comma-separated CIDR, as typed
 	URL        string
 	Quota      int64
 	Used       int64
@@ -184,15 +197,15 @@ type NodeRow struct {
 func (s *Service) NodeRows() ([]NodeRow, error) {
 	var rows []NodeRow
 	for _, n := range s.Nodes.Edges() {
-		row := NodeRow{Name: n.Name, URL: n.URL, Quota: n.QuotaBytes}
+		row := NodeRow{ID: n.ID, Name: n.Name, Allow: AllowString(n.Allow), URL: n.URL, Quota: n.QuotaBytes}
 		var err error
-		if row.Used, err = s.Store.NodeUsed(n.Name); err != nil {
+		if row.Used, err = s.Store.NodeUsed(n.ID); err != nil {
 			return nil, err
 		}
-		if row.Status, err = s.Store.GetNodeStatus(n.Name); err != nil {
+		if row.Status, err = s.Store.GetNodeStatus(n.ID); err != nil {
 			return nil, err
 		}
-		if row.Placements, err = s.Store.NodePlacements(n.Name); err != nil {
+		if row.Placements, err = s.Store.NodePlacements(n.ID); err != nil {
 			return nil, err
 		}
 		row.Online = edgerouter.Servable(row.Status, s.Now())

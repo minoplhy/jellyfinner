@@ -20,7 +20,7 @@
     <span class="selected-count" data-selected></span>
     {{if .Nodes}}
     <span class="spacer"></span>
-    <select name="node" aria-label="Edge node">{{range .Nodes}}<option>{{.}}</option>{{end}}</select>
+    <select name="node" aria-label="Edge node">{{range .Nodes}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select>
     <button formaction="{{base}}/library/cache" hx-post="{{base}}/library/cache" hx-target="#library-body" hx-swap="outerHTML">Cache to node</button>
     {{end}}
   </div>

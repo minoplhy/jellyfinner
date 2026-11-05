@@ -1,0 +1,35 @@
+{{define "content"}}
+{{with .Content}}
+<div class="page-head">
+  <h1>Edit {{.Name}}</h1>
+  <div class="actions"><a class="button" href="{{base}}/nodes">Back to Nodes</a></div>
+</div>
+{{if .Rented}}
+<div class="panel muted">{{.Name}} is a rented server's node. The cloud scaler names and manages it, so it cannot be edited.</div>
+{{else}}
+<div class="panel">
+  <form method="post" action="{{base}}/nodes/{{.ID}}/edit">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="form-grid">
+      <label>Name <input type="text" name="name" required pattern="[a-z0-9\-]+" value="{{.Name}}" title="Lowercase letters, digits and dashes"></label>
+      {{if .Edge}}
+      <label>Public URL <input type="text" name="url" required value="{{.URL}}" placeholder="https://example.com/edge1" inputmode="url"></label>
+      <label>Quota, GB <input type="number" name="quota_gb" required min="1" step="1" value="{{.QuotaGB}}"></label>
+      {{end}}
+      <label>Allowed addresses <input type="text" name="allow" value="{{.Allow}}" placeholder="empty accepts any address"></label>
+    </div>
+    <div class="form-actions"><button class="primary">Save</button><span class="muted small">Takes effect within seconds. The node keeps its token{{if .Edge}} and signing key{{end}}, so nothing changes on its side.</span></div>
+  </form>
+</div>
+<ul class="muted small">
+  <li>Node ID <code>{{.ID}}</code> never changes. Jobs, history{{if .Edge}} and cached titles{{end}} follow it through a rename.</li>
+  <li>Allowed addresses are comma-separated CIDR. Leave the box empty to accept any address. A node calling from elsewhere is refused at once.</li>
+  {{if .Edge}}
+  <li>A new URL is used for the next redirect and health probe. Your proxy must already serve the node there; a path such as <code>https://example.com/edge1</code> needs nothing on the node.</li>
+  <li>A smaller quota removes nothing. No new title is cached here until the node holds less.</li>
+  {{if .Viewers}}<li><code>EDGE_VIEWERS</code> sends {{range $i, $v := .Viewers}}{{if $i}}, {{end}}{{$v}}{{end}} here by name. After a rename, change it there too and restart.</li>{{end}}
+  {{end}}
+</ul>
+{{end}}
+{{end}}
+{{end}}

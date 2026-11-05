@@ -42,6 +42,8 @@ const usage = `usage: orchestrator [--env FILE] COMMAND
   node add NAME --edge --url URL --quota-gb N [--allow CIDR,...]
   node list
   node remove NAME
+  node edit NAME [--name NEW] [--allow CIDR,...] [--url URL] [--quota-gb N]
+                               changes a node; its token and keys stay
   node rotate NAME             issues a new token, and the old one stops working
   node pause NAME|--all        a worker finishes its job, then takes no more
   node resume NAME|--all
@@ -427,7 +429,7 @@ func edgeCommand(envFile string, args []string) error {
 		fmt.Fprintln(w, "NODE\tSTATE\tSIZE MB\tOUTPUT\tERROR")
 		for _, row := range rows {
 			for _, p := range row.Placements {
-				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", p.Node, p.State, p.Size/1e6, p.Output, p.Error)
+				fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", row.Name, p.State, p.Size/1e6, p.Output, p.Error)
 			}
 		}
 		return w.Flush()
@@ -441,13 +443,17 @@ func edgeCommand(envFile string, args []string) error {
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
-	switch args[0] {
-	case "pin":
-		return svc.Pin(args[1], *node)
-	case "unpin":
-		return svc.Unpin(args[1], *node, *force)
+	if args[0] != "pin" && args[0] != "unpin" {
+		return fmt.Errorf("unknown edge command %q", args[0])
 	}
-	return fmt.Errorf("unknown edge command %q", args[0])
+	n, err := svc.FindNode(*node)
+	if err != nil {
+		return err
+	}
+	if args[0] == "pin" {
+		return svc.Pin(args[1], n.ID)
+	}
+	return svc.Unpin(args[1], n.ID, *force)
 }
 
 func queueCommand(envFile string, args []string) error {

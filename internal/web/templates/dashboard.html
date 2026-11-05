@@ -43,7 +43,7 @@
         <tbody>
         {{range .Nodes}}
         <tr>
-          <td class="nowrap"><a href="{{base}}/nodes#node-{{.Name}}">{{.Name}}</a></td>
+          <td class="nowrap"><a href="{{base}}/nodes#node-{{.ID}}">{{.Name}}</a></td>
           <td class="muted">{{.Role}}</td>
           <td>{{template "nodebadge" .State}}</td>
           <td class="muted nowrap">{{if .Seen.IsZero}}—{{else}}{{agoT .Seen}}{{end}}</td>

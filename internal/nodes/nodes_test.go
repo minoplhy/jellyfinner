@@ -37,13 +37,13 @@ func openNodes(t *testing.T) (fixture, string) {
 func TestNodeLifecycle(t *testing.T) {
 	s, _ := openNodes(t)
 	allow := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.0.2.1/32")}
-	if err := s.Add(&Node{Name: "worker1", Kind: NodeWorker, TokenHash: HashToken("one"), Allow: allow}); err != nil {
+	if err := s.Add(&Node{ID: "worker1", Name: "worker1", Kind: NodeWorker, TokenHash: HashToken("one"), Allow: allow}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Add(&Node{Name: "edge1", Kind: NodeEdge, TokenHash: HashToken("two"), URL: "https://e", QuotaBytes: 5, SigningKey: "k"}); err != nil {
+	if err := s.Add(&Node{ID: "edge1", Name: "edge1", Kind: NodeEdge, TokenHash: HashToken("two"), URL: "https://e", QuotaBytes: 5, SigningKey: "k"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Add(&Node{Name: "worker1", Kind: NodeWorker, TokenHash: HashToken("three")}); !errors.Is(err, ErrNodeExists) {
+	if err := s.Add(&Node{ID: "worker1", Name: "worker1", Kind: NodeWorker, TokenHash: HashToken("three")}); !errors.Is(err, ErrNodeExists) {
 		t.Errorf("duplicate: %v", err)
 	}
 
@@ -76,7 +76,7 @@ func TestNodeLifecycle(t *testing.T) {
 
 func TestRemoveNodeForgetsPlacements(t *testing.T) {
 	s, _ := openNodes(t)
-	if err := s.Add(&Node{Name: "edge1", Kind: NodeEdge, TokenHash: HashToken("t")}); err != nil {
+	if err := s.Add(&Node{ID: "edge1", Name: "edge1", Kind: NodeEdge, TokenHash: HashToken("t")}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.db.AddPlacement(&Placement{Node: "edge1", SHA256: "abc", Output: "a.mp4", Size: 1}); err != nil {
@@ -104,7 +104,7 @@ func TestOtherProcessChangesArriveWithTheCache(t *testing.T) {
 	now := time.Now()
 	s := open(t, path, func() time.Time { return now })
 	other := open(t, path, nil)
-	if err := other.Add(&Node{Name: "worker1", Kind: NodeWorker, TokenHash: HashToken("t")}); err != nil {
+	if err := other.Add(&Node{ID: "worker1", Name: "worker1", Kind: NodeWorker, TokenHash: HashToken("t")}); err != nil {
 		t.Fatal(err)
 	}
 	if s.ByToken("t") == nil {
@@ -119,6 +119,39 @@ func TestOtherProcessChangesArriveWithTheCache(t *testing.T) {
 	now = now.Add(cacheFor + time.Second)
 	if s.ByToken("t") != nil {
 		t.Error("a removed node must stop working once the cache ages out")
+	}
+}
+
+// An edit in another process, such as the CLI, reaches the router with the
+// cache: a new URL is used for the next redirect, and the edge is found by
+// its new name while its ID stays.
+func TestEditArrivesWithTheCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	now := time.Now()
+	s := open(t, path, func() time.Time { return now })
+	other := open(t, path, nil)
+	id, err := NewID()
+	if err != nil || len(id) != 16 {
+		t.Fatalf("NewID = %q, %v", id, err)
+	}
+	if err := other.Add(&Node{ID: id, Name: "edge1", Kind: NodeEdge, TokenHash: HashToken("t"), URL: "https://old.example"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.EdgeByName("edge1"); n == nil || n.ID != id {
+		t.Fatalf("EdgeByName = %+v", n)
+	}
+	if err := other.Update(&Node{ID: id, Name: "edge-paris", URL: "https://example.com/edge1"}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(cacheFor + time.Second)
+	if s.EdgeByName("edge1") != nil {
+		t.Error("the old name still finds the edge")
+	}
+	if n := s.Edge(id); n == nil || n.Name != "edge-paris" || n.URL != "https://example.com/edge1" {
+		t.Errorf("Edge(id) = %+v", n)
+	}
+	if n := s.ByID(id); n == nil || s.ByToken("t") == nil {
+		t.Error("the token must keep working through an edit")
 	}
 }
 

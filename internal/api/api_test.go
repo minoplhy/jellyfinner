@@ -53,7 +53,7 @@ func newFixture(t *testing.T, testNodes []testNode) *fixture {
 	reg := nodes.New(store, nil)
 
 	for _, n := range testNodes {
-		node := &model.Node{Name: n.Name, Kind: model.NodeWorker, TokenHash: nodes.HashToken(n.Token), Allow: n.Allow}
+		node := &model.Node{ID: n.Name, Name: n.Name, Kind: model.NodeWorker, TokenHash: nodes.HashToken(n.Token), Allow: n.Allow}
 		if n.Edge {
 			node.Kind = model.NodeEdge
 		}

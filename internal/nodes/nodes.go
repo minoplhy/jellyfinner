@@ -46,6 +46,16 @@ func NewSecret() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// NewID returns a node ID: 16 hex characters that never change, so the name
+// can be edited without touching anything that refers to the node.
+func NewID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // HashToken is what the database keeps instead of a token. Tokens are long and
 // random, so a plain hash is enough to make a stolen database useless here.
 func HashToken(token string) string {
@@ -73,8 +83,17 @@ func (r *Registry) Add(n *model.Node) error {
 
 // Remove revokes a node and forgets what it cached. The files stay on the
 // node, because nothing can order it to delete them any more.
-func (r *Registry) Remove(name string) error {
-	if err := r.store.RemoveNode(name); err != nil {
+func (r *Registry) Remove(id string) error {
+	if err := r.store.RemoveNode(id); err != nil {
+		return err
+	}
+	r.forget()
+	return nil
+}
+
+// Update saves a node's name, allowed addresses, URL and quota.
+func (r *Registry) Update(n *model.Node) error {
+	if err := r.store.UpdateNode(n); err != nil {
 		return err
 	}
 	r.forget()
@@ -82,8 +101,8 @@ func (r *Registry) Remove(name string) error {
 }
 
 // SetToken replaces a node's token, which revokes the old one.
-func (r *Registry) SetToken(name, tokenHash string) error {
-	if err := r.store.SetNodeToken(name, tokenHash); err != nil {
+func (r *Registry) SetToken(id, tokenHash string) error {
+	if err := r.store.SetNodeToken(id, tokenHash); err != nil {
 		return err
 	}
 	r.forget()
@@ -92,8 +111,8 @@ func (r *Registry) SetToken(name, tokenHash string) error {
 
 // SetPaused pauses or resumes a node. Claim reads it from the database, so it
 // holds at once; the cache only affects what the UI shows.
-func (r *Registry) SetPaused(name string, paused bool) error {
-	if err := r.store.SetNodePaused(name, paused); err != nil {
+func (r *Registry) SetPaused(id string, paused bool) error {
+	if err := r.store.SetNodePaused(id, paused); err != nil {
 		return err
 	}
 	r.forget()
@@ -131,10 +150,30 @@ func (r *Registry) Edges() []model.Node {
 	return out
 }
 
-// Edge finds an edge node by name.
-func (r *Registry) Edge(name string) *model.Node {
+// Edge finds an edge node by ID.
+func (r *Registry) Edge(id string) *model.Node {
+	for _, n := range r.Edges() {
+		if n.ID == id {
+			return &n
+		}
+	}
+	return nil
+}
+
+// EdgeByName finds an edge node by name, as EDGE_VIEWERS gives it.
+func (r *Registry) EdgeByName(name string) *model.Node {
 	for _, n := range r.Edges() {
 		if n.Name == name {
+			return &n
+		}
+	}
+	return nil
+}
+
+// ByID finds a live node by ID.
+func (r *Registry) ByID(id string) *model.Node {
+	for _, n := range r.All() {
+		if n.ID == id {
 			return &n
 		}
 	}

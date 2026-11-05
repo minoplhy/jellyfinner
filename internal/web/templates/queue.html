@@ -10,7 +10,7 @@
   <input type="search" name="q" value="{{.Filter.Search}}" placeholder="Search by path" aria-label="Search by path"
     hx-get="{{base}}/fragments/queue" hx-trigger="input changed delay:300ms, search" hx-target="#queue-body" hx-swap="outerHTML" hx-include="#queue-filter">
   <button>Search</button>
-  {{with .Filter.Node}}<span class="chip">node: {{.}} <a href="{{base}}/queue{{with $.Content.Filter.State}}?state={{.}}{{end}}" aria-label="Show every node">×</a></span>{{end}}
+  {{with .Filter.Node}}<span class="chip">node: {{$.Content.NodeName}} <a href="{{base}}/queue{{with $.Content.Filter.State}}?state={{.}}{{end}}" aria-label="Show every node">×</a></span>{{end}}
 </form>
 {{template "queuebody" .}}
 {{end}}
@@ -31,7 +31,7 @@
       <td>{{template "badge" .State}}</td>
       <td class="num">{{.Attempts}}</td>
       <td>{{if eq .State "running"}}{{template "progress" .}}{{else if .Error}}<span class="error small">{{.Error}}</span>{{else}}<span class="muted small">{{.Reason}}</span>{{end}}</td>
-      <td class="nowrap muted small">{{.Node}}</td>
+      <td class="nowrap muted small">{{.NodeName}}</td>
       <td class="num muted small">{{ago .Updated}}</td>
       <td class="actions">{{template "jobactions" (actions .ID .State $csrf "queue")}}</td>
     </tr>

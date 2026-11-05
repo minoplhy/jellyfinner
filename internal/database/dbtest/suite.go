@@ -6,6 +6,7 @@ package dbtest
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -552,7 +553,7 @@ func (x suite) TestSetEncodedNeedsATrackedSource(t *testing.T) {
 func (x suite) TestPausedNodeClaimsNothing(t *testing.T) {
 	s, _ := x.open(t, database.Options{})
 	for _, name := range []string{"worker1", "worker2"} {
-		if err := s.AddNode(&model.Node{Name: name, Kind: model.NodeWorker, TokenHash: name}); err != nil {
+		if err := s.AddNode(&model.Node{ID: name, Name: name, Kind: model.NodeWorker, TokenHash: name}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -594,9 +595,94 @@ func (x suite) TestPausedNodeClaimsNothing(t *testing.T) {
 	}
 }
 
+func (x suite) TestUpdateNode(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	edge := &model.Node{ID: "id-edge", Name: "edge1", Kind: model.NodeEdge, TokenHash: "h1", URL: "https://a.example", QuotaBytes: 1e9, SigningKey: "k"}
+	worker := &model.Node{ID: "id-worker", Name: "worker1", Kind: model.NodeWorker, TokenHash: "h2"}
+	for _, n := range []*model.Node{edge, worker} {
+		if err := s.AddNode(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	edge.Name, edge.URL, edge.QuotaBytes = "edge-paris", "https://example.com/edge1", 5e9
+	edge.Allow = []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}
+	if err := s.UpdateNode(edge); err != nil {
+		t.Fatal(err)
+	}
+	nodes, err := s.LoadNodes()
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("LoadNodes = %+v, %v", nodes, err)
+	}
+	got := nodes[0] // edge-paris sorts first
+	if got.ID != "id-edge" || got.Name != "edge-paris" || got.URL != "https://example.com/edge1" || got.QuotaBytes != 5e9 ||
+		len(got.Allow) != 1 || got.Allow[0].String() != "203.0.113.0/24" || got.TokenHash != "h1" || got.SigningKey != "k" {
+		t.Errorf("after update: %+v", got)
+	}
+
+	worker.Name = "edge-paris"
+	if err := s.UpdateNode(worker); !errors.Is(err, model.ErrNodeExists) {
+		t.Errorf("taking a live node's name: %v", err)
+	}
+	if err := s.UpdateNode(&model.Node{ID: "nobody", Name: "x"}); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("updating an unknown node: %v", err)
+	}
+	if err := s.AddNode(&model.Node{ID: "id-other", Name: "edge-paris", Kind: model.NodeWorker, TokenHash: "h3"}); !errors.Is(err, model.ErrNodeExists) {
+		t.Errorf("adding a live node's name: %v", err)
+	}
+}
+
+func (x suite) TestRemovedNodeKeepsItsNameInHistory(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	if err := s.AddNode(&model.Node{ID: "id-1", Name: "worker1", Kind: model.NodeWorker, TokenHash: "h1"}); err != nil {
+		t.Fatal(err)
+	}
+	addJob(t, s, "a", model.PriorityNew)
+	j, err := s.Claim("id-1", time.Minute)
+	if err != nil || j == nil || j.Node != "id-1" || j.NodeName != "worker1" {
+		t.Fatalf("Claim = %+v, %v", j, err)
+	}
+	if err := s.Complete(j.ID, j.LeaseID, "{}", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A rename shows on old jobs, because they refer to the ID.
+	if err := s.UpdateNode(&model.Node{ID: "id-1", Name: "gpu-box"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get("a"); err != nil || got.NodeName != "gpu-box" {
+		t.Fatalf("after rename: %+v, %v", got, err)
+	}
+
+	if err := s.RemoveNode("id-1"); err != nil {
+		t.Fatal(err)
+	}
+	if nodes, err := s.LoadNodes(); err != nil || len(nodes) != 0 {
+		t.Fatalf("a removed node is still live: %+v, %v", nodes, err)
+	}
+	if got, err := s.Get("a"); err != nil || got.NodeName != "gpu-box" {
+		t.Errorf("a removed node's job lost its name: %+v, %v", got, err)
+	}
+	if names, err := s.NodeNames(); err != nil || names["id-1"] != "gpu-box" {
+		t.Errorf("NodeNames = %v, %v", names, err)
+	}
+	if err := s.RemoveNode("id-1"); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("removing twice: %v", err)
+	}
+	if err := s.SetNodeToken("id-1", "h9"); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("a removed node took a token: %v", err)
+	}
+	// The name is free again, for a new node with its own history.
+	if err := s.AddNode(&model.Node{ID: "id-2", Name: "gpu-box", Kind: model.NodeWorker, TokenHash: "h2"}); err != nil {
+		t.Fatalf("reusing a removed node's name: %v", err)
+	}
+	if got, _ := s.Get("a"); got.Node != "id-1" {
+		t.Errorf("an old job moved to the new node: %+v", got)
+	}
+}
+
 func (x suite) TestCloudServersKeepHistory(t *testing.T) {
 	s, c := x.open(t, database.Options{})
-	a := &model.CloudServer{Provider: "p1", ID: "1", Name: "cloud-p1-a", Type: "t", Location: "l",
+	a := &model.CloudServer{Provider: "p1", ID: "1", Name: "cloud-p1-a", Node: "node-a", Type: "t", Location: "l",
 		State: model.CloudBooting, Created: c.t.Unix(), HourlyPrice: 0.05, Currency: "EUR"}
 	b := &model.CloudServer{Provider: "p2", ID: "1", Name: "cloud-p2-b", Type: "t", Location: "l",
 		State: model.CloudReady, Created: c.t.Unix() + 1}

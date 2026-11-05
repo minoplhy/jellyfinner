@@ -91,8 +91,8 @@ func New(svc *orchestrator.Service, auth jellyfin.API, lastSeen func() map[strin
 			return jobActions{ID: id, State: state, CSRF: csrf, From: from}
 		},
 		"logLines": logLines,
-		"nodeAdmin": func(name string, edge bool, csrf string) nodeAdmin {
-			return nodeAdmin{Name: name, Edge: edge, CSRF: csrf}
+		"nodeAdmin": func(id, name string, edge bool, csrf string) nodeAdmin {
+			return nodeAdmin{ID: id, Name: name, Edge: edge, CSRF: csrf, Rented: !edge && strings.HasPrefix(name, "cloud-")}
 		},
 		// money is an estimated amount in a provider's own currency.
 		"money": func(v float64, currency string) string {
@@ -111,7 +111,7 @@ func New(svc *orchestrator.Service, auth jellyfin.API, lastSeen func() map[strin
 		// pctOf is a share of a total, for meter thresholds.
 		"pctOf": func(total int64, percent int64) int64 { return total / 100 * percent },
 	}
-	for _, page := range []string{"login", "dashboard", "queue", "job", "library", "confirm", "nodes", "nodesecret", "usage"} {
+	for _, page := range []string{"login", "dashboard", "queue", "job", "library", "confirm", "nodes", "nodesecret", "nodeedit", "usage"} {
 		s.pages[page] = template.Must(template.New("layout.html").Funcs(funcs).
 			ParseFS(assets, "templates/layout.html", "templates/"+page+".html"))
 	}
@@ -144,9 +144,11 @@ func splitPath(p string) pathParts {
 
 // nodeAdmin is what the nodeadmin partial needs.
 type nodeAdmin struct {
-	Name string
-	Edge bool
-	CSRF string
+	ID     string
+	Name   string
+	Edge   bool
+	CSRF   string
+	Rented bool // a rented server's node, which cannot be edited
 }
 
 // jobActions is what the jobactions partial needs.
@@ -195,6 +197,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /nodes/{node}/remove", s.protected(s.nodeRemove))
 	mux.HandleFunc("POST /nodes/{node}/rotate", s.protected(s.nodeRotate))
 	mux.HandleFunc("POST /nodes/{node}/delete", s.protected(s.nodeDelete))
+	mux.HandleFunc("GET /nodes/{node}/edit", s.protected(s.nodeEditPage))
+	mux.HandleFunc("POST /nodes/{node}/edit", s.protected(s.nodeEdit))
 	mux.HandleFunc("POST /nodes/{node}/{action}", s.protected(s.nodePause))
 	mux.HandleFunc("GET /usage", s.protected(s.usagePage))
 	mux.HandleFunc("GET /fragments/usage", s.protected(s.usageFragment))
