@@ -24,7 +24,7 @@ If `/srv/originals` differs, update `RequiresMountsFor`, `ReadOnlyPaths` and `Re
 
 ## Admin UI
 
-Set `WEB_ADDR`. Either give it `WEB_TLS_CERT` and `WEB_TLS_KEY`, or bind a private address behind an HTTPS reverse proxy that sets `X-Forwarded-Proto: https`, so the session cookie is marked Secure. Keep the control API on its own listener.
+Set `ADMIN_ADDR`, and `ADMIN_URL` to the https address people open. Either give it `ADMIN_TLS_CERT` and `ADMIN_TLS_KEY`, or bind a private address behind an HTTPS reverse proxy. An https `ADMIN_URL` marks the session cookie Secure. Keep the control API on its own listener.
 
 ## Edge delivery
 

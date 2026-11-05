@@ -1,35 +1,54 @@
 {{define "content"}}
 {{with .Content}}
-<h1>Library</h1>
-<form class="toolbar" method="get" action="{{base}}/library">
-  <input type="search" name="q" value="{{.Search}}" placeholder="Search titles or paths">
+<div class="page-head">
+  <h1>Library</h1>
+  <div class="actions">
+    <form method="post" action="{{base}}/scan" hx-post="{{base}}/scan" hx-swap="none"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="next" value="/library"><button title="Look for new, changed and removed originals now">Scan now</button></form>
+  </div>
+</div>
+<form class="toolbar" method="get" action="{{base}}/library" role="search">
+  <input type="search" name="q" value="{{.Search}}" placeholder="Search titles or paths" aria-label="Search titles or paths"
+    hx-get="{{base}}/fragments/library" hx-trigger="input changed delay:300ms, search" hx-target="#library-body" hx-swap="outerHTML">
   <button>Search</button>
+  {{if .Search}}<a class="button" href="{{base}}/library">Clear</a>{{end}}
 </form>
 <form method="post">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <div class="toolbar">
-    <button class="primary" formaction="{{base}}/library/add">Add to queue</button>
-    <button formaction="{{base}}/library/reencode">Re-encode</button>
+    <button class="primary" formaction="{{base}}/library/add" hx-post="{{base}}/library/add" hx-target="#library-body" hx-swap="outerHTML">Add to queue</button>
+    <button formaction="{{base}}/library/reencode">Re-encode…</button>
+    <span class="selected-count" data-selected></span>
     {{if .Nodes}}
+    <span class="spacer"></span>
     <select name="node" aria-label="Edge node">{{range .Nodes}}<option>{{.}}</option>{{end}}</select>
-    <button formaction="{{base}}/library/cache">Cache to node</button>
+    <button formaction="{{base}}/library/cache" hx-post="{{base}}/library/cache" hx-target="#library-body" hx-swap="outerHTML">Cache to node</button>
     {{end}}
-    <span class="muted">{{len .Rows}} of {{.Total}} titles shown</span>
   </div>
-  <div class="panel">
-    <table>
-      <tr><th></th><th>Title</th><th>State</th><th>Size</th><th>Job</th></tr>
-      {{range .Rows}}
-      <tr>
-        <td><input type="checkbox" name="path" value="{{.Path}}" aria-label="Select {{.Title}}"></td>
-        <td class="path">{{.Path}}</td>
-        <td class="state-{{.State}}">{{.State}}</td>
-        <td>{{size .Size}}</td>
-        <td>{{with .Job}}<a href="{{base}}/jobs/{{.ID}}">{{.State}}</a>{{end}}</td>
-      </tr>
-      {{else}}<tr><td class="muted" colspan="5">No titles found.</td></tr>{{end}}
-    </table>
-  </div>
+  {{template "librarybody" .}}
 </form>
 {{end}}
+{{end}}
+
+{{define "librarybody"}}
+<div id="library-body">
+  <div class="panel flush">
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th class="check"><input type="checkbox" data-select-all aria-label="Select every title shown"></th><th>Title</th><th>State</th><th class="num">Size</th><th>Job</th></tr></thead>
+      <tbody>
+      {{range .Rows}}
+      <tr>
+        <td class="check"><input type="checkbox" name="path" value="{{.Path}}" aria-label="Select {{.Title}}"></td>
+        <td class="path">{{template "path" .Path}}</td>
+        <td>{{template "badge" .State}}</td>
+        <td class="num">{{size .Size}}</td>
+        <td class="nowrap">{{with .Job}}<a href="{{base}}/jobs/{{.ID}}">{{.State}}</a>{{end}}</td>
+      </tr>
+      {{else}}<tr><td class="empty" colspan="5">{{if .Search}}No titles match “{{.Search}}”.{{else}}No titles yet. The scan picks up new files every few minutes, so check that the originals folder is mounted.{{end}}</td></tr>{{end}}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  <p class="muted small">{{len .Rows}} of {{.Total}} titles shown{{if lt (len .Rows) .Total}}. Search to narrow it down{{end}}.</p>
+</div>
 {{end}}

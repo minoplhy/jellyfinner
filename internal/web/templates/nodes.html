@@ -1,29 +1,139 @@
 {{define "content"}}
 {{$csrf := .Content.CSRF}}
-<h1>Edge nodes</h1>
-{{range .Content.Nodes}}
-{{$node := .Name}}
-<div class="panel">
-  <h2>{{.Name}} <span class="{{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></h2>
-  <p class="muted">{{.URL}} · {{size .Used}} of {{size .Quota}} quota · {{size .Status.DiskFree}} free on disk · viewers: {{range .Viewers}}{{.}} {{else}}none{{end}}</p>
+<h1>Nodes</h1>
+
+<div class="page-head">
+  <h2>Encoding nodes <span class="count">{{len .Content.Workers}}</span></h2>
+</div>
+{{template "addworker" $csrf}}
+{{template "workers" .Content}}
+<p class="muted small">An encoding node is online while it keeps calling the control API. The orchestrator keeps last-seen times in memory, so after a restart a node shows as not seen until its next call.</p>
+
+<div class="page-head">
+  <h2>Edge nodes <span class="count">{{len .Content.Edges}}</span></h2>
+</div>
+{{template "addedge" $csrf}}
+{{template "edges" .Content}}
+<p class="muted small">An edge node is online when its agent reported within the last minute and the orchestrator's probe of its URL passed. Only online edge nodes get viewers.</p>
+{{end}}
+
+{{define "addworker"}}
+<details class="add panel">
+  <summary class="button">Add an encoding node</summary>
+  <form method="post" action="{{base}}/nodes/add">
+    <input type="hidden" name="csrf" value="{{.}}">
+    <input type="hidden" name="kind" value="worker">
+    <div class="form-grid">
+      <label>Name <input type="text" name="name" required pattern="[a-z0-9\-]+" placeholder="worker2" title="Lowercase letters, digits and dashes"></label>
+      <label>Allowed addresses, optional <input type="text" name="allow" placeholder="10.8.0.0/24, 203.0.113.7/32"></label>
+    </div>
+    <div class="form-actions"><button class="primary">Add node</button><span class="muted small">The next page shows its token once.</span></div>
+  </form>
+</details>
+{{end}}
+
+{{define "addedge"}}
+<details class="add panel">
+  <summary class="button">Add an edge node</summary>
+  <form method="post" action="{{base}}/nodes/add">
+    <input type="hidden" name="csrf" value="{{.}}">
+    <input type="hidden" name="kind" value="edge">
+    <div class="form-grid">
+      <label>Name <input type="text" name="name" required pattern="[a-z0-9\-]+" placeholder="edge1" title="Lowercase letters, digits and dashes"></label>
+      <label>Public URL <input type="text" name="url" required placeholder="https://edge1.example.com" inputmode="url"></label>
+      <label>Quota, GB <input type="number" name="quota_gb" required min="1" step="1" placeholder="200"></label>
+      <label>Allowed addresses, optional <input type="text" name="allow" placeholder="203.0.113.7/32"></label>
+    </div>
+    <div class="form-actions"><button class="primary">Add node</button><span class="muted small">The next page shows its token and signing key once.</span></div>
+  </form>
+</details>
+{{end}}
+
+{{/* nodeadmin is the rotate and remove buttons for one node. The pages they
+     return replace the main area, so a secret is shown and then gone. */}}
+{{define "nodeadmin"}}
+<form method="post" action="{{base}}/nodes/{{.Name}}/rotate" hx-post="{{base}}/nodes/{{.Name}}/rotate" hx-target="main" hx-select="main" hx-swap="outerHTML"
+  hx-confirm="Issue a new token for {{.Name}}? The old one stops working within seconds, so the node stays offline until you paste the new one in.">
+  <input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small quiet">New token</button></form>
+<form method="post" action="{{base}}/nodes/{{.Name}}/delete" hx-post="{{base}}/nodes/{{.Name}}/delete" hx-target="main" hx-select="main" hx-swap="outerHTML"
+  hx-confirm="Remove {{.Name}}? Its token stops working at once.{{if .Edge}} Files it cached stay on its disk.{{end}}">
+  <input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small quiet danger">Remove node</button></form>
+{{end}}
+
+{{define "workers"}}
+{{$csrf := .CSRF}}
+<div id="workers" class="panel flush" data-poll hx-get="{{base}}/fragments/nodes/workers" hx-trigger="every 3s" hx-swap="outerHTML">
+  <div class="table-wrap">
   <table>
-    <tr><th>Title</th><th>State</th><th>Size</th><th>Last played</th><th></th></tr>
+    <thead><tr><th>Node</th><th>State</th><th>Last seen</th><th>Working on</th><th class="num">Failed, 24 h</th><th></th></tr></thead>
+    <tbody>
+    {{range .Workers}}
+    <tr id="node-{{.Name}}">
+      <td class="nowrap"><b>{{.Name}}</b></td>
+      <td>{{template "nodebadge" .State}}</td>
+      <td class="muted nowrap">{{if .Seen.IsZero}}—{{else}}{{agoT .Seen}}{{end}}</td>
+      <td>{{range .Active}}<div class="path small"><a href="{{base}}/jobs/{{.ID}}">{{template "path" .Path}}</a></div>{{if eq .State "running"}}{{template "progress" .}}{{else}}{{template "badge" .State}}{{end}}{{else}}<span class="muted">idle</span>{{end}}</td>
+      <td class="num">{{if .Failed}}<a class="error" href="{{base}}/queue?state=failed&node={{.Name}}">{{.Failed}}</a>{{else}}<span class="muted">0</span>{{end}}</td>
+      <td class="actions">{{template "nodeadmin" (nodeAdmin .Name false $csrf)}}</td>
+    </tr>
+    {{else}}<tr><td class="empty" colspan="6">No encoding nodes yet. Add one above, then paste its settings into the worker compose file.</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+</div>
+{{end}}
+
+{{define "edges"}}
+{{$csrf := .CSRF}}
+<div id="edges" data-poll hx-get="{{base}}/fragments/nodes/edges" hx-trigger="every 10s" hx-swap="outerHTML">
+{{range .Edges}}
+{{$node := .Name}}
+<div class="panel" id="node-{{.Name}}">
+  <div class="panel-head">
+    <h2>{{.Name}}</h2>
+    {{template "nodebadge" .State}}
+    <span class="muted small">{{if .Status.LastSeen}}reported {{ago .Status.LastSeen}}{{end}}</span>
+    <div class="actions">{{template "nodeadmin" (nodeAdmin .Name true $csrf)}}</div>
+  </div>
+  <div class="meta">
+    <span><a href="{{.URL}}" rel="noreferrer">{{.URL}}</a></span>
+    <span>Viewers: <b>{{range $i, $v := .Viewers}}{{if $i}}, {{end}}{{$v}}{{else}}none{{end}}</b></span>
+  </div>
+  <div class="meta">
+    <div class="gauge">
+      <meter min="0" max="{{.Quota}}" value="{{.Used}}" low="{{pctOf .Quota 70}}" high="{{pctOf .Quota 90}}" optimum="0">{{size .Used}}</meter>
+      <span>Quota: {{size .Used}} of {{size .Quota}}</span>
+    </div>
+    {{if .Status.DiskTotal}}
+    <div class="gauge">
+      <meter min="0" max="{{.Status.DiskTotal}}" value="{{.DiskUsed}}" low="{{pctOf .Status.DiskTotal 80}}" high="{{pctOf .Status.DiskTotal 95}}" optimum="0">{{size .DiskUsed}}</meter>
+      <span>Disk: {{size .Status.DiskFree}} free of {{size .Status.DiskTotal}}</span>
+    </div>
+    {{end}}
+  </div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Title</th><th>State</th><th class="num">Size</th><th>Last played</th><th></th></tr></thead>
+    <tbody>
     {{range .Placements}}
     <tr>
-      <td class="path">{{.Output}}</td>
-      <td class="state-{{.State}}">{{.State}}{{with .Error}} <span class="error">{{.}}</span>{{end}}</td>
-      <td>{{size .Size}}</td>
-      <td class="muted">{{if .LastPlayed}}{{ago .LastPlayed}}{{else}}never{{end}}</td>
-      <td>{{if ne .State "deleting"}}
-        <form method="post" action="{{base}}/nodes/{{$node}}/remove">
+      <td class="path">{{template "path" .Output}}</td>
+      <td>{{template "badge" .State}}{{with .Error}} <span class="error small">{{.}}</span>{{end}}</td>
+      <td class="num">{{size .Size}}</td>
+      <td class="muted nowrap">{{if .LastPlayed}}{{ago .LastPlayed}}{{else}}never{{end}}</td>
+      <td class="actions">{{if ne .State "deleting"}}
+        <form method="post" action="{{base}}/nodes/{{$node}}/remove" hx-post="{{base}}/nodes/{{$node}}/remove" hx-target="#edges" hx-swap="outerHTML">
           <input type="hidden" name="csrf" value="{{$csrf}}">
           <input type="hidden" name="output" value="{{.Output}}">
-          <label class="check"><input type="checkbox" name="force"> even if recently played</label>
-          <button>Remove</button>
+          <label class="check small"><input type="checkbox" name="force"> even if played recently</label>
+          <button class="small danger">Remove</button>
         </form>{{end}}</td>
     </tr>
-    {{else}}<tr><td class="muted" colspan="5">Nothing cached.</td></tr>{{end}}
+    {{else}}<tr><td class="empty" colspan="5">Nothing cached. Send titles here from the Library page.</td></tr>{{end}}
+    </tbody>
   </table>
+  </div>
 </div>
-{{else}}<div class="panel muted">No edge nodes are configured.</div>{{end}}
+{{else}}<div class="panel muted">No edge nodes are configured. Add one above, then paste its settings into the edge compose file.</div>{{end}}
+</div>
 {{end}}

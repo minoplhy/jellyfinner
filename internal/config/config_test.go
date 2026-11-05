@@ -210,15 +210,32 @@ func TestBasePath(t *testing.T) {
 	}
 }
 
-func TestWebBasePathSetting(t *testing.T) {
+func TestAdminURLSetting(t *testing.T) {
 	env := base()
-	env["WEB_BASE_PATH"] = "/jellyfinner/"
+	env["ADMIN_URL"] = "https://example.com/jellyfinner/"
 	c, err := parseMap(env)
-	if err != nil || c.WebBasePath != "/jellyfinner" {
-		t.Fatalf("WebBasePath = %+v, %v", c, err)
+	if err != nil || c.AdminURL != "https://example.com/jellyfinner" || c.AdminBasePath() != "/jellyfinner" || !c.AdminHTTPS() {
+		t.Fatalf("AdminURL = %+v, %v", c, err)
 	}
-	env["WEB_BASE_PATH"] = "/x/../y"
-	if _, err := parseMap(env); err == nil {
-		t.Error("a bad WEB_BASE_PATH must be refused")
+	env["ADMIN_URL"] = "http://example.com"
+	if c, err = parseMap(env); err != nil || c.AdminBasePath() != "" || c.AdminHTTPS() {
+		t.Fatalf("plain ADMIN_URL = %+v, %v", c, err)
+	}
+	for _, bad := range []string{"https://example.com/x/../y", "/jellyfinner", "example.com/jellyfinner", "ftp://example.com"} {
+		env["ADMIN_URL"] = bad
+		if _, err := parseMap(env); err == nil {
+			t.Errorf("ADMIN_URL %q must be refused", bad)
+		}
+	}
+}
+
+func TestRemovedWebSettingsAreRefused(t *testing.T) {
+	for _, key := range []string{"WEB_ADDR", "WEB_BASE_PATH", "WEB_TLS_CERT", "WEB_TLS_KEY"} {
+		env := base()
+		env[key] = "x"
+		_, err := parseMap(env)
+		if err == nil || !strings.Contains(err.Error(), key+" was removed") || !strings.Contains(err.Error(), "ADMIN_") {
+			t.Errorf("%s: %v", key, err)
+		}
 	}
 }

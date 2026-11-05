@@ -1,33 +1,48 @@
 {{define "content"}}
+{{with .Content}}
 <h1>Queue</h1>
-<div class="panel">
-  <table>
-    <thead><tr><th>Title</th><th>State</th><th>Try</th><th>Progress</th><th>Reason / error</th><th></th></tr></thead>
-    <tbody hx-get="{{base}}/fragments/queue" hx-trigger="every 3s" hx-swap="innerHTML">{{template "rows" .Content}}</tbody>
-  </table>
-</div>
+<nav class="tabs" aria-label="Filter by state">
+  {{range .Tabs}}<a href="{{base}}/queue{{if .Query}}?{{.Query}}{{end}}"{{if .Current}} aria-current="page"{{end}}>{{.Label}}<span class="n">{{.Count}}</span></a>{{end}}
+</nav>
+<form id="queue-filter" class="toolbar" method="get" action="{{base}}/queue" role="search">
+  {{with .Filter.State}}<input type="hidden" name="state" value="{{.}}">{{end}}
+  {{with .Filter.Node}}<input type="hidden" name="node" value="{{.}}">{{end}}
+  <input type="search" name="q" value="{{.Filter.Search}}" placeholder="Search by path" aria-label="Search by path"
+    hx-get="{{base}}/fragments/queue" hx-trigger="input changed delay:300ms, search" hx-target="#queue-body" hx-swap="outerHTML" hx-include="#queue-filter">
+  <button>Search</button>
+  {{with .Filter.Node}}<span class="chip">node: {{.}} <a href="{{base}}/queue{{with $.Content.Filter.State}}?state={{.}}{{end}}" aria-label="Show every node">×</a></span>{{end}}
+</form>
+{{template "queuebody" .}}
+{{end}}
 {{end}}
 
-{{define "rows"}}
+{{/* queuebody polls with the page's own filters, so a refresh never
+     loses them. Actions and the search box redraw it the same way. */}}
+{{define "queuebody"}}
 {{$csrf := .CSRF}}
-{{range .Jobs}}
-<tr>
-  <td class="path"><a href="{{base}}/jobs/{{.ID}}">{{.Path}}</a></td>
-  <td class="state-{{.State}}">{{.State}}</td>
-  <td>{{.Attempts}}</td>
-  <td>{{if eq .State "running"}}{{.Stage}} {{pct .Fraction}}{{end}}</td>
-  <td>{{if .Error}}<span class="error">{{.Error}}</span>{{else}}<span class="muted">{{.Reason}}</span>{{end}}</td>
-  <td>
-    {{if eq .State "queued"}}
-    <form method="post" action="{{base}}/jobs/{{.ID}}/bump"><input type="hidden" name="csrf" value="{{$csrf}}"><button>Bump</button></form>
-    {{end}}
-    {{if or (eq .State "queued") (eq .State "running")}}
-    <form method="post" action="{{base}}/jobs/{{.ID}}/cancel"><input type="hidden" name="csrf" value="{{$csrf}}"><button>Cancel</button></form>
-    {{end}}
-    {{if or (eq .State "failed") (eq .State "cancelled")}}
-    <form method="post" action="{{base}}/jobs/{{.ID}}/retry"><input type="hidden" name="csrf" value="{{$csrf}}"><button>Retry</button></form>
-    {{end}}
-  </td>
-</tr>
-{{else}}<tr><td class="muted" colspan="6">The queue is empty.</td></tr>{{end}}
+<div id="queue-body" class="panel flush" data-poll hx-get="{{base}}/fragments/queue{{if .Query}}?{{.Query}}{{end}}" hx-trigger="every 3s" hx-swap="outerHTML">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Title</th><th>State</th><th class="num">Try</th><th>Progress / reason</th><th>Node</th><th class="num">Updated</th><th></th></tr></thead>
+    <tbody>
+    {{range .Jobs}}
+    <tr>
+      <td class="path"><a href="{{base}}/jobs/{{.ID}}">{{template "path" .Path}}</a></td>
+      <td>{{template "badge" .State}}</td>
+      <td class="num">{{.Attempts}}</td>
+      <td>{{if eq .State "running"}}{{template "progress" .}}{{else if .Error}}<span class="error small">{{.Error}}</span>{{else}}<span class="muted small">{{.Reason}}</span>{{end}}</td>
+      <td class="nowrap muted small">{{.Node}}</td>
+      <td class="num muted small">{{ago .Updated}}</td>
+      <td class="actions">{{template "jobactions" (actions .ID .State $csrf "queue")}}</td>
+    </tr>
+    {{else}}<tr><td class="empty" colspan="7">{{if or .Filter.State .Filter.Node .Filter.Search}}No jobs match this filter.{{else}}The queue is empty. Queue titles from the <a href="{{base}}/library">Library</a> page.{{end}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  </div>
+  {{if .Total}}<div class="pager">
+    <span>{{.First}}–{{.Last}} of {{.Total}}</span>
+    {{if .Prev}}<a class="button" href="{{base}}/queue?{{.Prev}}">Previous</a>{{end}}
+    {{if .Next}}<a class="button" href="{{base}}/queue?{{.Next}}">Next</a>{{end}}
+  </div>{{end}}
+</div>
 {{end}}

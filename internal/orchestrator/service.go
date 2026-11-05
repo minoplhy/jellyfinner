@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -171,8 +172,12 @@ func (s *Service) clearAbandonedUploads() {
 
 // JobFailed reports a job that has run out of attempts.
 func (s *Service) JobFailed(ctx context.Context, j *queue.Job) {
-	s.send(ctx, fmt.Sprintf("Encode failed: %s (job %s, %d attempts). Last error: %s",
-		Title(j.Path), j.ID, j.Attempts, j.Error))
+	message := fmt.Sprintf("Encode failed: %s (job %s, %d attempts). Last error: %s",
+		Title(j.Path), j.ID, j.Attempts, j.Error)
+	if s.Cfg.AdminURL != "" {
+		message += " " + s.Cfg.AdminURL + "/jobs/" + url.PathEscape(j.ID)
+	}
+	s.send(ctx, message)
 }
 
 func (s *Service) runScan(ctx context.Context) {

@@ -222,18 +222,18 @@ func serve(envFile string) error {
 	}
 
 	var extra []*http.Server
-	if cfg.WebAddr != "" {
+	if cfg.AdminAddr != "" {
 		admin := web.New(svc, jellyfin.New(cfg.JellyfinURL, cfg.JellyfinToken), control.LastSeen, logger)
-		if cfg.WebTLSCert == "" {
-			if err := config.CheckListenAddr(cfg.WebAddr); err != nil {
-				return fmt.Errorf("WEB_ADDR without WEB_TLS_CERT: %w", err)
+		if cfg.AdminTLSCert == "" {
+			if err := config.CheckListenAddr(cfg.AdminAddr); err != nil {
+				return fmt.Errorf("ADMIN_ADDR without ADMIN_TLS_CERT: %w", err)
 			}
 		}
-		srv := &http.Server{Addr: cfg.WebAddr, Handler: admin.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: time.Minute, WriteTimeout: time.Minute}
+		srv := &http.Server{Addr: cfg.AdminAddr, Handler: admin.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: time.Minute, WriteTimeout: time.Minute}
 		extra = append(extra, srv)
 		go func() {
-			if cfg.WebTLSCert != "" {
-				serveErr <- srv.ListenAndServeTLS(cfg.WebTLSCert, cfg.WebTLSKey)
+			if cfg.AdminTLSCert != "" {
+				serveErr <- srv.ListenAndServeTLS(cfg.AdminTLSCert, cfg.AdminTLSKey)
 				return
 			}
 			serveErr <- srv.ListenAndServe()

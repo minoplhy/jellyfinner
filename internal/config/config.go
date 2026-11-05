@@ -93,15 +93,16 @@ type Config struct {
 	EdgeURLTTL   time.Duration
 	RouterAddr   string
 
-	// WebAddr enables the admin UI. MetricsAddr enables /metrics.
-	// WebBasePath serves the UI under a path, such as /jellyfinner.
-	WebAddr     string
-	WebBasePath string
-	WebTLSCert  string
-	WebTLSKey   string
-	MetricsAddr string
-	DiscordURL  string
-	NtfyURL     string
+	// AdminAddr enables the admin UI. AdminURL is where people open it, and
+	// its path, such as /jellyfinner-admin, is where the UI is served.
+	// MetricsAddr enables /metrics.
+	AdminAddr    string
+	AdminURL     string
+	AdminTLSCert string
+	AdminTLSKey  string
+	MetricsAddr  string
+	DiscordURL   string
+	NtfyURL      string
 }
 
 // Load reads envFile, which may be absent, then validates the result.
@@ -119,7 +120,21 @@ func Load(envFile string) (*Config, error) {
 	return parse(get)
 }
 
+// renamed lists settings that were removed. Starting with one set fails, so an
+// upgrade cannot quietly switch the admin UI off.
+var renamed = []struct{ old, hint string }{
+	{"WEB_ADDR", "set ADMIN_ADDR instead"},
+	{"WEB_BASE_PATH", "set ADMIN_URL to the full address, such as https://example.com/jellyfinner-admin"},
+	{"WEB_TLS_CERT", "set ADMIN_TLS_CERT instead"},
+	{"WEB_TLS_KEY", "set ADMIN_TLS_KEY instead"},
+}
+
 func parse(get func(string) string) (*Config, error) {
+	for _, r := range renamed {
+		if get(r.old) != "" {
+			return nil, fmt.Errorf("%s was removed: %s", r.old, r.hint)
+		}
+	}
 	mode, err := ParseMode(get("ENCODE_MODE"))
 	if err != nil {
 		return nil, err
@@ -142,9 +157,10 @@ func parse(get func(string) string) (*Config, error) {
 		WebhookAddr:        or(get("WEBHOOK_ADDR"), "127.0.0.1:8201"),
 		WebhookToken:       get("WEBHOOK_TOKEN"),
 		Output:             encode.DefaultProfile(),
-		WebAddr:            get("WEB_ADDR"),
-		WebTLSCert:         get("WEB_TLS_CERT"),
-		WebTLSKey:          get("WEB_TLS_KEY"),
+		AdminAddr:          get("ADMIN_ADDR"),
+		AdminURL:           strings.TrimSuffix(get("ADMIN_URL"), "/"),
+		AdminTLSCert:       get("ADMIN_TLS_CERT"),
+		AdminTLSKey:        get("ADMIN_TLS_KEY"),
 		MetricsAddr:        get("METRICS_ADDR"),
 		RouterAddr:         or(get("ROUTER_ADDR"), "127.0.0.1:8204"),
 		DiscordURL:         get("NOTIFY_DISCORD_URL"),
@@ -203,9 +219,6 @@ func parse(get func(string) string) (*Config, error) {
 	if c.EdgeViewers, err = ParseEdgeViewers(get("EDGE_VIEWERS")); err != nil {
 		return nil, err
 	}
-	if c.WebBasePath, err = BasePath(get("WEB_BASE_PATH")); err != nil {
-		return nil, fmt.Errorf("WEB_BASE_PATH: %w", err)
-	}
 	dailyGB, err := integer(get("BACKFILL_DAILY_GB"), 200)
 	if err != nil {
 		return nil, fmt.Errorf("BACKFILL_DAILY_GB: %w", err)
@@ -240,11 +253,17 @@ func (c *Config) validate() error {
 			return errors.New("manual mode needs WEBHOOK_TOKEN of at least 32 characters")
 		}
 	}
-	if c.WebAddr != "" && (c.JellyfinURL == "") {
-		return errors.New("WEB_ADDR needs JELLYFIN_URL, because login goes through Jellyfin")
+	if c.AdminAddr != "" && (c.JellyfinURL == "") {
+		return errors.New("ADMIN_ADDR needs JELLYFIN_URL, because login goes through Jellyfin")
 	}
-	if (c.WebTLSCert == "") != (c.WebTLSKey == "") {
-		return errors.New("WEB_TLS_CERT and WEB_TLS_KEY must be set together")
+	if (c.AdminTLSCert == "") != (c.AdminTLSKey == "") {
+		return errors.New("ADMIN_TLS_CERT and ADMIN_TLS_KEY must be set together")
+	}
+	if c.AdminURL != "" {
+		u, err := url.Parse(c.AdminURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("ADMIN_URL must be a full http or https address, such as https://example.com/jellyfinner-admin")
+		}
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return errors.New("TLS_CERT and TLS_KEY must be set together")
@@ -258,7 +277,7 @@ func (c *Config) validate() error {
 	if nested(c.LibraryDir, c.OriginalsDir) || nested(c.OriginalsDir, c.LibraryDir) {
 		return errors.New("ORIGINALS_DIR and LIBRARY_DIR must not contain each other")
 	}
-	for _, u := range []struct{ key, value string }{{"CONTROL_URL", c.ControlURL}, {"JELLYFIN_URL", c.JellyfinURL}} {
+	for _, u := range []struct{ key, value string }{{"CONTROL_URL", c.ControlURL}, {"ADMIN_URL", c.AdminURL}, {"JELLYFIN_URL", c.JellyfinURL}} {
 		if _, err := URLBasePath(u.value); err != nil {
 			return fmt.Errorf("%s: %w", u.key, err)
 		}
@@ -305,6 +324,18 @@ func URLBasePath(raw string) (string, error) {
 func (c *Config) ControlBasePath() string {
 	p, _ := URLBasePath(c.ControlURL)
 	return p
+}
+
+// AdminBasePath is the prefix of ADMIN_URL, which validate has checked.
+func (c *Config) AdminBasePath() string {
+	p, _ := URLBasePath(c.AdminURL)
+	return p
+}
+
+// AdminHTTPS reports whether people reach the admin UI over https, so its
+// session cookie must never travel in the clear.
+func (c *Config) AdminHTTPS() bool {
+	return strings.HasPrefix(strings.ToLower(c.AdminURL), "https://")
 }
 
 // TrimPrefix removes a path prefix when the path is under it, and otherwise

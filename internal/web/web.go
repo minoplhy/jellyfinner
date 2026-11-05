@@ -3,6 +3,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -14,6 +15,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +23,6 @@ import (
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/jellyfin"
 	"jellyfinner/internal/orchestrator"
-	"jellyfinner/internal/queue"
 )
 
 //go:embed templates/*.html static/*
@@ -49,7 +50,13 @@ type session struct {
 	user    string
 	csrf    string
 	expires time.Time
-	flash   string
+	flash   *flashMsg
+}
+
+// flashMsg is shown once, on the next page. Kind is ok, warn or error.
+type flashMsg struct {
+	Kind string
+	Text string
 }
 
 type attempts struct {
@@ -64,7 +71,7 @@ type Server struct {
 	lastSeen func() map[string]time.Time
 	log      *log.Logger
 	pages    map[string]*template.Template
-	base     string // WEB_BASE_PATH, such as /jellyfinner
+	base     string // the path of ADMIN_URL, such as /jellyfinner-admin
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -74,30 +81,68 @@ type Server struct {
 // New parses the templates. A broken template is a build mistake, so it panics.
 func New(svc *orchestrator.Service, auth Authenticator, lastSeen func() map[string]time.Time, logger *log.Logger) *Server {
 	s := &Server{
-		svc: svc, auth: auth, lastSeen: lastSeen, log: logger, base: svc.Cfg.WebBasePath,
+		svc: svc, auth: auth, lastSeen: lastSeen, log: logger, base: svc.Cfg.AdminBasePath(),
 		pages: map[string]*template.Template{}, sessions: map[string]*session{}, logins: map[string]*attempts{},
 	}
 	funcs := template.FuncMap{
-		"size": humanSize,
-		"pct":  func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
-		"ago":  func(unix int64) string { return s.ago(time.Unix(unix, 0)) },
-		"agoT": s.ago,
-		"base": func() string { return s.base },
+		"size":      humanSize,
+		"pct":       func(f float64) string { return fmt.Sprintf("%.0f%%", f*100) },
+		"ago":       func(unix int64) string { return s.ago(time.Unix(unix, 0)) },
+		"agoT":      s.ago,
+		"base":      func() string { return s.base },
+		"splitPath": splitPath,
+		// actions feeds the jobactions partial. from is "queue" or "job", the
+		// page the buttons sit on, which decides what an action redraws.
+		"actions": func(id, state, csrf, from string) jobActions {
+			return jobActions{ID: id, State: state, CSRF: csrf, From: from}
+		},
+		"logLines": logLines,
+		"nodeAdmin": func(name string, edge bool, csrf string) nodeAdmin {
+			return nodeAdmin{Name: name, Edge: edge, CSRF: csrf}
+		},
+		// pctOf is a share of a total, for meter thresholds.
+		"pctOf": func(total int64, percent int64) int64 { return total / 100 * percent },
 	}
-	for _, page := range []string{"login", "dashboard", "queue", "job", "library", "confirm", "nodes"} {
+	for _, page := range []string{"login", "dashboard", "queue", "job", "library", "confirm", "nodes", "nodesecret"} {
 		s.pages[page] = template.Must(template.New("layout.html").Funcs(funcs).
 			ParseFS(assets, "templates/layout.html", "templates/"+page+".html"))
 	}
 	return s
 }
 
+// ago says how long ago something was, in its largest whole unit.
 func (s *Server) ago(t time.Time) string {
-	d := s.svc.Store.Now().Sub(t).Round(time.Second)
-	if d < 0 {
-		d = 0
+	d := s.svc.Store.Now().Sub(t)
+	switch {
+	case d < 5*time.Second:
+		return "just now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	}
-	return d.String() + " ago"
+	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 }
+
+type pathParts struct{ Dir, File string }
+
+// splitPath separates a path's folder, kept with its slash, from its file name.
+func splitPath(p string) pathParts {
+	i := strings.LastIndex(p, "/")
+	return pathParts{Dir: p[:i+1], File: p[i+1:]}
+}
+
+// nodeAdmin is what the nodeadmin partial needs.
+type nodeAdmin struct {
+	Name string
+	Edge bool
+	CSRF string
+}
+
+// jobActions is what the jobactions partial needs.
+type jobActions struct{ ID, State, CSRF, From string }
 
 func humanSize(n int64) string {
 	switch {
@@ -122,17 +167,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /logout", s.protected(s.logout))
 	mux.HandleFunc("GET /{$}", s.protected(s.dashboard))
 	mux.HandleFunc("GET /fragments/dashboard", s.protected(s.dashboardFragment))
+	mux.HandleFunc("POST /backfill/{action}", s.protected(s.backfillAction))
+	mux.HandleFunc("POST /scan", s.protected(s.scan))
 	mux.HandleFunc("GET /queue", s.protected(s.queuePage))
 	mux.HandleFunc("GET /fragments/queue", s.protected(s.queueFragment))
 	mux.HandleFunc("GET /jobs/{id}", s.protected(s.jobPage))
+	mux.HandleFunc("GET /jobs/{id}/log", s.protected(s.jobLog))
+	mux.HandleFunc("GET /fragments/jobs/{id}", s.protected(s.jobFragment))
 	mux.HandleFunc("POST /jobs/{id}/{action}", s.protected(s.jobAction))
 	mux.HandleFunc("GET /library", s.protected(s.libraryPage))
+	mux.HandleFunc("GET /fragments/library", s.protected(s.libraryFragment))
 	mux.HandleFunc("POST /library/add", s.protected(s.libraryAdd))
 	mux.HandleFunc("POST /library/cache", s.protected(s.libraryCache))
-	mux.HandleFunc("GET /nodes", s.protected(s.nodesPage))
-	mux.HandleFunc("POST /nodes/{node}/remove", s.protected(s.nodeRemove))
 	mux.HandleFunc("POST /library/reencode", s.protected(s.reencodeConfirm))
 	mux.HandleFunc("POST /library/reencode/confirm", s.protected(s.reencode))
+	mux.HandleFunc("GET /nodes", s.protected(s.nodesPage))
+	mux.HandleFunc("GET /fragments/nodes/{part}", s.protected(s.nodesFragment))
+	mux.HandleFunc("POST /nodes/add", s.protected(s.nodeAdd))
+	mux.HandleFunc("POST /nodes/{node}/remove", s.protected(s.nodeRemove))
+	mux.HandleFunc("POST /nodes/{node}/rotate", s.protected(s.nodeRotate))
+	mux.HandleFunc("POST /nodes/{node}/delete", s.protected(s.nodeDelete))
 	return headers(config.StripPrefix(s.base, mux))
 }
 
@@ -250,19 +304,20 @@ func (s *Server) loginFailed(addr string) {
 
 type pageData struct {
 	Title   string
+	Page    string
 	User    string
 	CSRF    string
-	Flash   string
+	Flash   *flashMsg
 	Mode    string
 	Content any
 }
 
 func (s *Server) render(w http.ResponseWriter, sess *session, page, title string, content any) {
-	data := pageData{Title: title, Mode: string(s.svc.Cfg.Mode), Content: content}
+	data := pageData{Title: title, Page: page, Mode: string(s.svc.Cfg.Mode), Content: content}
 	if sess != nil {
 		s.mu.Lock()
 		data.User, data.CSRF, data.Flash = sess.user, sess.csrf, sess.flash
-		sess.flash = ""
+		sess.flash = nil
 		s.mu.Unlock()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -278,10 +333,10 @@ func (s *Server) fragment(w http.ResponseWriter, page, name string, data any) {
 	}
 }
 
-func (s *Server) flash(sess *session, message string) {
+func (s *Server) flash(sess *session, kind, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sess.flash = message
+	sess.flash = &flashMsg{Kind: kind, Text: message}
 }
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +399,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: id, Path: s.cookiePath(), HttpOnly: true, SameSite: http.SameSiteStrictMode,
-		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		Secure: s.svc.Cfg.AdminHTTPS() || r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 		MaxAge: int(sessionLife.Seconds()),
 	})
 	s.redirect(w, r, "/")
@@ -360,63 +415,45 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request, _ *session) {
 	s.redirect(w, r, "/login")
 }
 
-type nodeRow struct {
-	Name   string
-	Seen   time.Time
-	Online bool
-}
+func isHTMX(r *http.Request) bool { return r.Header.Get("HX-Request") == "true" }
 
-type dashboardData struct {
-	Nodes    []nodeRow
-	Counts   map[string]int
-	Active   []*queue.Job
-	Backfill orchestrator.BackfillStatus
-	Budget   int64
-}
-
-func (s *Server) dashboardData() (dashboardData, error) {
-	data := dashboardData{Budget: s.svc.Cfg.BackfillDailyBytes}
-	seen := s.lastSeen()
-	for _, node := range s.svc.Store.Nodes() {
-		row := nodeRow{Name: node.Name, Seen: seen[node.Name]}
-		row.Online = !row.Seen.IsZero() && s.now().Sub(row.Seen) < 2*s.svc.Cfg.LeaseFor
-		data.Nodes = append(data.Nodes, row)
+// finish ends a request that changed something. A plain form post is
+// redirected to page, which shows the message. An htmx request instead gets
+// the named fragment from set, the part of the page that changed, followed by
+// the message as a toast. name may be empty when nothing on the page changed.
+func (s *Server) finish(w http.ResponseWriter, r *http.Request, sess *session, page string, msg flashMsg, set, name string, data any) {
+	if !isHTMX(r) {
+		if msg.Text != "" {
+			s.flash(sess, msg.Kind, msg.Text)
+		}
+		s.redirect(w, r, page)
+		return
 	}
-	var err error
-	if data.Counts, err = s.svc.Store.StateCounts(); err != nil {
-		return data, err
-	}
-	if data.Backfill, err = s.svc.BackfillStatus(); err != nil {
-		return data, err
-	}
-	jobs, err := s.svc.Store.List(queueRows)
-	if err != nil {
-		return data, err
-	}
-	for _, j := range jobs {
-		if j.State == queue.StateRunning || j.State == queue.StatePublishing {
-			data.Active = append(data.Active, j)
+	var buf bytes.Buffer
+	if name != "" {
+		if err := s.pages[set].ExecuteTemplate(&buf, name, data); err != nil {
+			s.fail(w, err)
+			return
 		}
 	}
-	return data, nil
+	if msg.Text != "" {
+		if err := s.pages[set].ExecuteTemplate(&buf, "toast", msg); err != nil {
+			s.fail(w, err)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
 }
 
-func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request, sess *session) {
-	data, err := s.dashboardData()
+// currentQuery is the query of the page an htmx request came from, so a
+// redrawn fragment keeps that page's filters.
+func currentQuery(r *http.Request) url.Values {
+	u, err := url.Parse(r.Header.Get("HX-Current-URL"))
 	if err != nil {
-		s.fail(w, err)
-		return
+		return url.Values{}
 	}
-	s.render(w, sess, "dashboard", "Dashboard", data)
-}
-
-func (s *Server) dashboardFragment(w http.ResponseWriter, _ *http.Request, _ *session) {
-	data, err := s.dashboardData()
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	s.fragment(w, "dashboard", "status", data)
+	return u.Query()
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
@@ -424,184 +461,11 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	http.Error(w, "internal error", http.StatusInternalServerError)
 }
 
-type queueData struct {
-	CSRF string
-	Jobs []*queue.Job
-}
-
-func (s *Server) queuePage(w http.ResponseWriter, _ *http.Request, sess *session) {
-	jobs, err := s.svc.Store.List(queueRows)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	s.render(w, sess, "queue", "Queue", queueData{CSRF: sess.csrf, Jobs: jobs})
-}
-
-func (s *Server) queueFragment(w http.ResponseWriter, _ *http.Request, sess *session) {
-	jobs, err := s.svc.Store.List(queueRows)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	s.fragment(w, "queue", "rows", queueData{CSRF: sess.csrf, Jobs: jobs})
-}
-
-func (s *Server) jobPage(w http.ResponseWriter, r *http.Request, sess *session) {
-	j, err := s.svc.Store.Get(r.PathValue("id"))
-	if errors.Is(err, queue.ErrNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	s.render(w, sess, "job", "Job "+j.ID, j)
-}
-
-func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, sess *session) {
-	id := r.PathValue("id")
-	var err error
-	switch r.PathValue("action") {
-	case "cancel":
-		err = s.svc.Store.Cancel(id)
-	case "bump":
-		err = s.svc.Store.Bump(id)
-	case "retry":
-		err = s.svc.Store.Retry(id)
-	default:
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		s.flash(sess, err.Error())
-	}
-	s.redirect(w, r, "/queue")
-}
-
-type libraryData struct {
-	CSRF   string
-	Nodes  []string
-	Search string
-	Rows   []orchestrator.TitleRow
-	Total  int
-}
-
-func (s *Server) libraryPage(w http.ResponseWriter, r *http.Request, sess *session) {
-	search := r.URL.Query().Get("q")
-	rows, total, err := s.svc.Titles(search, libraryRows)
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	var nodes []string
-	for _, n := range s.svc.Store.EdgeNodes() {
-		nodes = append(nodes, n.Name)
-	}
-	s.render(w, sess, "library", "Library", libraryData{CSRF: sess.csrf, Nodes: nodes, Search: search, Rows: rows, Total: total})
-}
-
-func (s *Server) libraryCache(w http.ResponseWriter, r *http.Request, sess *session) {
-	node := r.PostForm.Get("node")
-	var errs []string
-	done := 0
-	for _, path := range r.PostForm["path"] {
-		if err := s.svc.Pin(path, node); err != nil {
-			errs = append(errs, err.Error())
-			continue
-		}
-		done++
-	}
-	s.flash(sess, summary("sent to "+node, done, errs))
-	s.redirect(w, r, "/library")
-}
-
-type nodesData struct {
-	CSRF  string
-	Nodes []orchestrator.NodeRow
-}
-
-func (s *Server) nodesPage(w http.ResponseWriter, _ *http.Request, sess *session) {
-	rows, err := s.svc.NodeRows()
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	s.render(w, sess, "nodes", "Nodes", nodesData{CSRF: sess.csrf, Nodes: rows})
-}
-
-func (s *Server) nodeRemove(w http.ResponseWriter, r *http.Request, sess *session) {
-	err := s.svc.UnpinOutput(r.PostForm.Get("output"), r.PathValue("node"), r.PostForm.Get("force") != "")
-	if err != nil {
-		s.flash(sess, err.Error())
-	}
-	s.redirect(w, r, "/nodes")
-}
-
-func (s *Server) libraryAdd(w http.ResponseWriter, r *http.Request, sess *session) {
-	var errs []string
-	done := 0
-	for _, path := range r.PostForm["path"] {
-		if _, err := s.svc.Add(path); err != nil {
-			errs = append(errs, err.Error())
-			continue
-		}
-		done++
-	}
-	s.flash(sess, summary("queued", done, errs))
-	s.redirect(w, r, "/library")
-}
-
-func summary(verb string, done int, errs []string) string {
+// summary reports a batch action, as a warning when anything was refused.
+func summary(verb string, done int, errs []string) flashMsg {
 	message := fmt.Sprintf("%d %s.", done, verb)
 	if len(errs) > 0 {
-		message += " Refused: " + strings.Join(errs, "; ")
+		return flashMsg{"warn", message + " Refused: " + strings.Join(errs, "; ")}
 	}
-	return message
-}
-
-type confirmData struct {
-	CSRF  string
-	Paths []string
-	Size  int64
-}
-
-func (s *Server) reencodeConfirm(w http.ResponseWriter, r *http.Request, sess *session) {
-	size, known, err := s.svc.SourceSizes(r.PostForm["path"])
-	if err != nil {
-		s.fail(w, err)
-		return
-	}
-	if len(known) == 0 {
-		s.flash(sess, "Select at least one title.")
-		s.redirect(w, r, "/library")
-		return
-	}
-	s.render(w, sess, "confirm", "Confirm re-encode", confirmData{CSRF: sess.csrf, Paths: known, Size: size})
-}
-
-func (s *Server) reencode(w http.ResponseWriter, r *http.Request, sess *session) {
-	reason := strings.TrimSpace(r.PostForm.Get("reason"))
-	if reason == "" {
-		s.flash(sess, "A reason is required, so repeat problems are visible later.")
-		s.redirect(w, r, "/library")
-		return
-	}
-	opts := orchestrator.ReencodeOptions{
-		Reason:      reason,
-		ForceEncode: r.PostForm.Get("force_encode") != "",
-		Software:    r.PostForm.Get("software") != "",
-	}
-	var errs []string
-	done := 0
-	for _, path := range r.PostForm["path"] {
-		if _, err := s.svc.Reencode(path, opts); err != nil {
-			errs = append(errs, err.Error())
-			continue
-		}
-		done++
-	}
-	s.flash(sess, summary("re-encodes ordered", done, errs))
-	s.redirect(w, r, "/queue")
+	return flashMsg{"ok", message}
 }

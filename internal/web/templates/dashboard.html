@@ -1,39 +1,80 @@
 {{define "content"}}
-<h1>Dashboard</h1>
-<div hx-get="{{base}}/fragments/dashboard" hx-trigger="every 3s" hx-swap="innerHTML">{{template "status" .Content}}</div>
+<div class="page-head">
+  <h1>Dashboard</h1>
+  <div class="actions">
+    <form method="post" action="{{base}}/scan" hx-post="{{base}}/scan" hx-swap="none"><input type="hidden" name="csrf" value="{{.CSRF}}"><button title="Look for new, changed and removed originals now">Scan now</button></form>
+  </div>
+</div>
+<div id="dashboard-status" data-poll hx-get="{{base}}/fragments/dashboard" hx-trigger="every 3s" hx-swap="innerHTML">{{template "status" .Content}}</div>
 {{end}}
 
 {{define "status"}}
 <div class="tiles">
-  <div class="tile"><b>{{index .Counts "queued"}}</b><span>Queued</span></div>
-  <div class="tile"><b>{{index .Counts "running"}}</b><span>Running</span></div>
-  <div class="tile"><b>{{index .Counts "publishing"}}</b><span>Publishing</span></div>
-  <div class="tile"><b>{{index .Counts "done"}}</b><span>Done</span></div>
-  <div class="tile"><b>{{index .Counts "failed"}}</b><span>Failed</span></div>
+  {{range .Tiles}}
+  <a class="tile{{if and (eq .State "failed") .Count}} alert{{end}}" href="{{base}}/queue?state={{.State}}"><b>{{.Count}}</b><span>{{.Label}}</span></a>
+  {{end}}
 </div>
-<h2>Nodes</h2>
-<div class="panel">
+
+<h2>Running now <span class="count">{{len .Active}}</span></h2>
+<div class="panel flush">
+  <div class="table-wrap">
   <table>
-    <tr><th>Node</th><th>State</th><th>Last seen</th></tr>
-    {{range .Nodes}}
-    <tr><td>{{.Name}}</td>
-      <td class="{{if .Online}}online{{else}}offline{{end}}">{{if .Online}}online{{else}}offline{{end}}</td>
-      <td class="muted">{{if .Seen.IsZero}}not since start{{else}}{{agoT .Seen}}{{end}}</td></tr>
-    {{else}}<tr><td class="muted">No nodes configured.</td></tr>{{end}}
-  </table>
-</div>
-<h2>Running now</h2>
-<div class="panel">
-  <table>
-    <tr><th>Title</th><th>Stage</th><th>Progress</th><th>Node</th></tr>
+    <thead><tr><th>Title</th><th>Progress</th><th>Node</th></tr></thead>
+    <tbody>
     {{range .Active}}
-    <tr><td class="path"><a href="{{base}}/jobs/{{.ID}}">{{.Path}}</a></td><td>{{.Stage}}</td><td>{{pct .Fraction}}</td><td>{{.Node}}</td></tr>
-    {{else}}<tr><td class="muted">Nothing is running.</td></tr>{{end}}
+    <tr>
+      <td class="path"><a href="{{base}}/jobs/{{.ID}}">{{template "path" .Path}}</a></td>
+      <td>{{if eq .State "publishing"}}{{template "badge" .State}}{{else}}{{template "progress" .}}{{end}}</td>
+      <td class="nowrap">{{.Node}}</td>
+    </tr>
+    {{else}}<tr><td class="empty" colspan="3">Nothing is encoding right now.</td></tr>{{end}}
+    </tbody>
   </table>
+  </div>
 </div>
-<h2>Backfill</h2>
-<div class="panel">
-  <p>{{if .Backfill.Active}}Running{{else}}Stopped{{end}} · {{.Backfill.Remaining}} titles left ({{size .Backfill.RemainingBytes}}) · {{.Backfill.InProgress}} in progress · {{.Backfill.Failed}} failed or cancelled</p>
-  <p class="muted">Today: {{size .Backfill.UsedToday}} of {{size .Budget}}. Start and pause it with the CLI.</p>
+
+<div class="grid-2">
+  <div>
+    <h2>Nodes <span class="count">{{len .Nodes}}</span></h2>
+    <div class="panel flush">
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Node</th><th>Role</th><th>State</th><th>Last seen</th></tr></thead>
+        <tbody>
+        {{range .Nodes}}
+        <tr>
+          <td class="nowrap"><a href="{{base}}/nodes#node-{{.Name}}">{{.Name}}</a></td>
+          <td class="muted">{{.Role}}</td>
+          <td>{{template "nodebadge" .State}}</td>
+          <td class="muted nowrap">{{if .Seen.IsZero}}—{{else}}{{agoT .Seen}}{{end}}</td>
+        </tr>
+        {{else}}<tr><td class="empty" colspan="4">No nodes yet. Add one on the <a href="{{base}}/nodes">Nodes</a> page.</td></tr>{{end}}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+  <div>
+    <h2>Backfill {{if .Backfill.Active}}{{template "badge" "running"}}{{else}}<span class="badge">stopped</span>{{end}}</h2>
+    <div class="panel">
+      <div class="panel-head">
+        <p>{{.Backfill.Remaining}} titles left <span class="muted">({{size .Backfill.RemainingBytes}})</span> · {{.Backfill.InProgress}} in progress · {{.Backfill.Failed}} failed or cancelled</p>
+        <div class="actions">
+        {{if .Backfill.Active}}
+          <form method="post" action="{{base}}/backfill/pause" hx-post="{{base}}/backfill/pause" hx-target="#dashboard-status" hx-swap="innerHTML"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small">Pause</button></form>
+        {{else if .Manual}}
+          <button class="small" disabled title="Backfill only runs in auto mode">Start</button>
+        {{else}}
+          <form method="post" action="{{base}}/backfill/start" hx-post="{{base}}/backfill/start" hx-target="#dashboard-status" hx-swap="innerHTML"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="small primary">Start</button></form>
+        {{end}}
+        </div>
+      </div>
+      {{if .Budget}}<div class="gauge">
+        <meter min="0" max="{{.Budget}}" value="{{.Backfill.UsedToday}}" low="{{.BudgetLow}}" high="{{.BudgetHigh}}" optimum="0">{{size .Backfill.UsedToday}}</meter>
+        <span>Today: {{size .Backfill.UsedToday}} of {{size .Budget}} daily budget</span>
+      </div>{{end}}
+      <p class="muted small">{{if .Backfill.Active}}Running. It encodes the titles left within the daily budget.{{else if .Manual}}Stopped. Backfill only runs in auto mode.{{else}}Stopped. Start it to encode the titles left within the daily budget.{{end}}</p>
+    </div>
+  </div>
 </div>
 {{end}}

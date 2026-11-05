@@ -65,7 +65,7 @@ docker compose exec orchestrator orchestrator node add worker1
 
 ## Everyday use
 
-The admin UI covers the queue, library and nodes. Set `WEB_ADDR` to enable it. Login uses Jellyfin, for administrators only.
+The admin UI covers the queue, library and nodes, and does what the CLI does: add, rotate and remove nodes, start and pause backfill, and scan now. Set `ADMIN_ADDR` to enable it, and `ADMIN_URL` to the address people open. Login uses Jellyfin, for administrators only.
 
 ```sh
 orchestrator queue list

@@ -14,6 +14,8 @@ Use a file as it is, or paste its services into your own `docker-compose.yaml`, 
 
 **Keep a filled-in file private and out of git,** because it holds node secrets.
 
+**Upgrading:** the admin UI settings were renamed from `WEB_*` to `ADMIN_*`. `WEB_ADDR` is now `ADMIN_ADDR`, `WEB_TLS_CERT` and `WEB_TLS_KEY` are now `ADMIN_TLS_CERT` and `ADMIN_TLS_KEY`, and `WEB_BASE_PATH` is replaced by `ADMIN_URL`, the full address. The orchestrator refuses to start while an old name is set, and the error names the new setting.
+
 ## Setup
 
 ### Orchestrator node
@@ -35,7 +37,7 @@ On the orchestrator node:
 docker compose exec orchestrator orchestrator node add worker1
 ```
 
-It prints `ORCHESTRATOR_URL` and `NODE_TOKEN`. Paste `compose.worker.yml` on the worker, fill those in, then:
+It prints `ORCHESTRATOR_URL` and `NODE_TOKEN`. The admin UI's Nodes page does the same with "Add an encoding node". Paste `compose.worker.yml` on the worker, fill those in, then:
 
 ```sh
 docker compose up -d
@@ -124,7 +126,7 @@ Subdomains need nothing extra, and paths such as `https://example.com/jellyfinne
 | Part | What to set |
 |---|---|
 | Control API | Put the path in `CONTROL_URL`, such as `https://example.com/jellyfinner`. `node add` prints it for nodes |
-| Admin UI | `WEB_BASE_PATH`, such as `/jellyfinner-admin` |
+| Admin UI | Put the path in `ADMIN_URL`, such as `https://example.com/jellyfinner-admin` |
 | Jellyfin and the router | Set Jellyfin's Base URL under Dashboard, Networking, and include it in `JELLYFIN_URL`, such as `http://host.docker.internal:8096/jellyfin`. Proxy that path to the router or to Jellyfin |
 | Edge node | Add it with `--url https://example.com/edge1`. `edge-serve` needs no setting |
 

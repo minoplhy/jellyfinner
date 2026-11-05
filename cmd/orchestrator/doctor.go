@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"jellyfinner/internal/config"
@@ -55,8 +57,30 @@ func runDoctor(envFile string) error {
 	if cfg.ControlURL == "" {
 		r.Note("CONTROL_URL is not set, so node add cannot print the address nodes need")
 	}
+	adminNotes(r, cfg)
 	checkJellyfin(r, cfg)
 	return r.Done()
+}
+
+// adminNotes points out admin UI settings that work but are likely wrong.
+func adminNotes(r *doctor.Report, cfg *config.Config) {
+	if cfg.AdminAddr == "" {
+		return
+	}
+	if cfg.AdminURL == "" {
+		r.Note("ADMIN_URL is not set, so the admin UI is served at / and its cookie is only marked secure behind https")
+		return
+	}
+	if sameSite(cfg.AdminURL, cfg.ControlURL) && cfg.AdminBasePath() == cfg.ControlBasePath() {
+		r.Note("ADMIN_URL and CONTROL_URL share a host and path, so a proxy cannot tell them apart: give one a path")
+	}
+}
+
+// sameSite reports whether two URLs name the same host and port.
+func sameSite(a, b string) bool {
+	ua, errA := url.Parse(a)
+	ub, errB := url.Parse(b)
+	return errA == nil && errB == nil && ua.Host != "" && strings.EqualFold(ua.Host, ub.Host)
 }
 
 // webhookUnreachable spots a manual-mode listener on the container's own

@@ -4,17 +4,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/url"
+	"log"
 	"os"
-	"regexp"
-	"strings"
 	"text/tabwriter"
 
-	"jellyfinner/internal/config"
+	"jellyfinner/internal/notify"
+	"jellyfinner/internal/orchestrator"
 	"jellyfinner/internal/queue"
 )
-
-var nodeName = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // nodeCommand changes the nodes table. serve and the router pick up a change
 // within seconds, so none of this needs a restart.
@@ -34,18 +31,16 @@ func nodeCommand(envFile string, args []string) error {
 	if len(rest) == 0 {
 		return fmt.Errorf("node %s needs a NAME", command)
 	}
+	svc := orchestrator.New(cfg, store, notify.New("", ""), nil, log.Default())
 	name := rest[0]
 	switch command {
 	case "add":
-		return addNode(cfg, store, name, rest[1:])
+		return addNode(svc, name, rest[1:])
 	case "remove":
 		return store.RemoveNode(name)
 	case "rotate":
-		token, err := queue.NewSecret()
+		token, err := svc.RotateNodeToken(name)
 		if err != nil {
-			return err
-		}
-		if err := store.SetNodeToken(name, queue.HashToken(token)); err != nil {
 			return err
 		}
 		fmt.Printf("New token for %s. The old one stops working within seconds.\n\n      NODE_TOKEN: %s\n", name, token)
@@ -54,7 +49,7 @@ func nodeCommand(envFile string, args []string) error {
 	return fmt.Errorf("unknown node command %q", command)
 }
 
-func addNode(cfg *config.Config, store *queue.Store, name string, args []string) error {
+func addNode(svc *orchestrator.Service, name string, args []string) error {
 	fs := flag.NewFlagSet("node add", flag.ExitOnError)
 	isEdge := fs.Bool("edge", false, "this node caches encodes for viewers")
 	edgeURL := fs.String("url", "", "edge only: the node's public https URL")
@@ -63,49 +58,22 @@ func addNode(cfg *config.Config, store *queue.Store, name string, args []string)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if !nodeName.MatchString(name) {
-		return errors.New("names use lowercase letters, digits and dashes")
-	}
-	prefixes, err := config.ParsePrefixes(*allow)
-	if err != nil {
-		return fmt.Errorf("--allow: %w", err)
-	}
-	token, err := queue.NewSecret()
+	added, err := svc.AddNode(orchestrator.NodeSpec{Name: name, Edge: *isEdge, URL: *edgeURL, QuotaGB: *quotaGB, Allow: *allow})
 	if err != nil {
 		return err
 	}
-	node := &queue.Node{Name: name, Kind: queue.NodeWorker, TokenHash: queue.HashToken(token), Allow: prefixes}
-	if *isEdge {
-		u, err := url.Parse(*edgeURL)
-		if err != nil || u.Scheme != "https" || u.Host == "" {
-			return errors.New("an edge node needs --url with an https address")
-		}
-		if *quotaGB <= 0 {
-			return errors.New("an edge node needs a positive --quota-gb")
-		}
-		node.Kind, node.URL, node.QuotaBytes = queue.NodeEdge, strings.TrimSuffix(*edgeURL, "/"), *quotaGB*1e9
-		if node.SigningKey, err = queue.NewSecret(); err != nil {
-			return err
-		}
-	} else if *edgeURL != "" || *quotaGB != 0 {
-		return errors.New("--url and --quota-gb need --edge")
-	}
-	if err := store.AddNode(node); err != nil {
-		return err
-	}
-
-	control := cfg.ControlURL
+	control := svc.Cfg.ControlURL
 	if control == "" {
-		control = "https://control.example.com"
+		control = orchestrator.ControlURLPlaceholder
 		fmt.Println("CONTROL_URL is not set here, so replace the address below with the one nodes reach.")
 	}
 	fmt.Printf("Added %s. It works now, with no restart. The token is shown only this once.\n\n", name)
-	if node.Edge() {
-		fmt.Printf("In the edge compose file, under edge-pull, environment:\n\n      ORCHESTRATOR_URL: %s\n      NODE_TOKEN: %s\n\n", control, token)
-		fmt.Printf("Under edge-serve, environment:\n\n      EDGE_SIGNING_KEY: %s\n", node.SigningKey)
+	if added.Node.Edge() {
+		fmt.Printf("In the edge compose file, under edge-pull, environment:\n\n      ORCHESTRATOR_URL: %s\n      NODE_TOKEN: %s\n\n", control, added.Token)
+		fmt.Printf("Under edge-serve, environment:\n\n      EDGE_SIGNING_KEY: %s\n", added.SigningKey)
 		return nil
 	}
-	fmt.Printf("In the worker compose file, under worker, environment:\n\n      ORCHESTRATOR_URL: %s\n      NODE_TOKEN: %s\n", control, token)
+	fmt.Printf("In the worker compose file, under worker, environment:\n\n      ORCHESTRATOR_URL: %s\n      NODE_TOKEN: %s\n", control, added.Token)
 	return nil
 }
 

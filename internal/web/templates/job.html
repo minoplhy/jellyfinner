@@ -1,23 +1,44 @@
 {{define "content"}}
-{{with .Content}}
-<h1>{{.Path}}</h1>
-<div class="panel">
-  <table>
-    <tr><th>Job</th><td>{{.ID}}</td></tr>
-    <tr><th>State</th><td class="state-{{.State}}">{{.State}}</td></tr>
-    <tr><th>Attempts</th><td>{{.Attempts}}</td></tr>
-    <tr><th>Node</th><td>{{.Node}}</td></tr>
-    <tr><th>Output</th><td class="path">{{.OutputPath}}</td></tr>
-    <tr><th>Source size</th><td>{{size .SourceSize}}</td></tr>
-    <tr><th>Revision</th><td>{{.Revision}}</td></tr>
-    {{if .Reason}}<tr><th>Reason</th><td>{{.Reason}}</td></tr>{{end}}
-    {{if .ForceEncode}}<tr><th>Option</th><td>Force encode</td></tr>{{end}}
-    {{if .Software}}<tr><th>Option</th><td>Software encoder</td></tr>{{end}}
-    {{if .Error}}<tr><th>Error</th><td class="error">{{.Error}}</td></tr>{{end}}
-    <tr><th>Updated</th><td>{{ago .Updated}}</td></tr>
-  </table>
+<p class="small"><a href="{{base}}/queue">← Queue</a></p>
+{{template "jobview" .Content}}
+{{end}}
+
+{{/* jobview polls while the job can still change. Once it ends, the fragment
+     comes back without the trigger, so polling stops by itself. */}}
+{{define "jobview"}}
+{{$csrf := .CSRF}}
+{{with .Job}}
+<div id="job"{{if $.Live}} data-poll hx-get="{{base}}/fragments/jobs/{{.ID}}" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+<div class="page-head">
+  <h1 class="path">{{template "path" .Path}}</h1>
+  {{template "badge" .State}}
+  <div class="actions">{{template "jobactions" (actions .ID .State $csrf "job")}}</div>
 </div>
-<h2>Log</h2>
-<div class="panel"><pre>{{if .Log}}{{.Log}}{{else}}No log yet.{{end}}</pre></div>
+{{if eq .State "running"}}<div class="panel">{{template "progress" .}}</div>{{end}}
+{{with .Error}}<div class="flash flash-error"><b>Error:</b> {{.}}</div>{{end}}
+<div class="panel">
+  <dl class="facts">
+    <dt>Job</dt><dd><code>{{.ID}}</code></dd>
+    <dt>Node</dt><dd>{{or .Node "—"}}</dd>
+    <dt>Attempts</dt><dd>{{.Attempts}}</dd>
+    <dt>Revision</dt><dd>{{.Revision}}</dd>
+    <dt>Source size</dt><dd>{{size .SourceSize}}</dd>
+    <dt>Output</dt><dd>{{if .OutputPath}}<code class="path">{{.OutputPath}}</code>{{else}}—{{end}}</dd>
+    {{with .Reason}}<dt>Reason</dt><dd>{{.}}</dd>{{end}}
+    {{if or .ForceEncode .Software}}<dt>Options</dt><dd>{{if .ForceEncode}}Force encode{{end}}{{if and .ForceEncode .Software}}, {{end}}{{if .Software}}Software encoder{{end}}</dd>{{end}}
+    <dt>Created</dt><dd>{{ago .Created}}</dd>
+    <dt>Updated</dt><dd>{{ago .Updated}}</dd>
+  </dl>
+</div>
+<div class="page-head">
+  <h2>Log</h2>
+  {{if .Log}}<div class="actions"><a class="button small" href="{{base}}/jobs/{{.ID}}/log" download>Download</a></div>{{end}}
+</div>
+{{if .Log}}
+<div class="log"><pre>{{range logLines .Log}}{{if .Bad}}<span class="bad">{{.Text}}</span>{{else}}{{.Text}}{{end}}
+{{end}}</pre></div>
+{{if $.Live}}<p class="muted small">This log is from the last attempt that finished. The current attempt's log appears when it ends.</p>{{end}}
+{{else}}<div class="panel muted">No log yet. It appears when an attempt finishes.</div>{{end}}
+</div>
 {{end}}
 {{end}}

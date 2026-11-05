@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -103,6 +104,53 @@ func (s *Store) List(limit int) ([]*Job, error) {
 	return s.query(`SELECT `+jobColumns+` FROM jobs
 		ORDER BY state IN ('running', 'publishing') DESC, state = 'queued' DESC, priority DESC, created DESC
 		LIMIT ?`, limit)
+}
+
+// JobFilter narrows a job listing. Empty fields match everything. Search
+// matches part of the path, ignoring ASCII case.
+type JobFilter struct {
+	State  string
+	Node   string
+	Search string
+}
+
+// ListFiltered returns one page of matching jobs, ordered as List orders them,
+// and how many match in all.
+func (s *Store) ListFiltered(f JobFilter, limit, offset int) ([]*Job, int, error) {
+	where := `(? = '' OR state = ?) AND (? = '' OR node = ?) AND (? = '' OR path LIKE ? ESCAPE '\')`
+	like := "%" + likeEscaper.Replace(f.Search) + "%"
+	args := []any{f.State, f.State, f.Node, f.Node, f.Search, like}
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	jobs, err := s.query(`SELECT `+jobColumns+` FROM jobs WHERE `+where+`
+		ORDER BY state IN ('running', 'publishing') DESC, state = 'queued' DESC, priority DESC, created DESC
+		LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	return jobs, total, err
+}
+
+// likeEscaper makes a search term match literally inside LIKE.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// FailedByNode counts, per node, the jobs that failed for good since a time.
+func (s *Store) FailedByNode(since time.Time) (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT node, COUNT(*) FROM jobs WHERE state = ? AND node != '' AND updated >= ?
+		GROUP BY node`, StateFailed, since.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var node string
+		var n int
+		if err := rows.Scan(&node, &n); err != nil {
+			return nil, err
+		}
+		counts[node] = n
+	}
+	return counts, rows.Err()
 }
 
 // Publishing returns jobs waiting to be published, including any left by a

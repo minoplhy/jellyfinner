@@ -7,24 +7,62 @@
 <title>{{.Title}} · Jellyfinner</title>
 <link rel="stylesheet" href="{{base}}/static/app.css">
 <script src="{{base}}/static/htmx.min.js"></script>
+<script src="{{base}}/static/app.js" defer></script>
 </head>
 <body>
 {{if .User}}
-<nav>
-  <span class="brand">Jellyfinner</span>
-  <a href="{{base}}/">Dashboard</a>
-  <a href="{{base}}/queue">Queue</a>
-  <a href="{{base}}/library">Library</a>
-  <a href="{{base}}/nodes">Nodes</a>
-  <span class="right">
-    <span>{{.Mode}} mode · {{.User}}</span>
-    <form method="post" action="{{base}}/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button>Sign out</button></form>
-  </span>
-</nav>
+<div id="session-expired" class="session-expired" role="alert" hidden>Your session has ended, so this page stopped updating. <a href="{{base}}/login">Sign in again</a>.</div>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="{{base}}/">Jellyfinner</a>
+    <nav class="nav" aria-label="Main">
+      <a href="{{base}}/"{{if eq .Page "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+      <a href="{{base}}/queue"{{if eq .Page "queue"}} aria-current="page"{{end}}>Queue</a>
+      <a href="{{base}}/library"{{if eq .Page "library"}} aria-current="page"{{end}}>Library</a>
+      <a href="{{base}}/nodes"{{if eq .Page "nodes"}} aria-current="page"{{end}}>Nodes</a>
+    </nav>
+    <div class="who">
+      <span class="badge b-{{.Mode}}" title="Set by ENCODE_MODE. To change it, stop serve, change ENCODE_MODE, then run orchestrator switch-mode.">{{.Mode}} mode</span>
+      <span class="user">{{.User}}</span>
+      <form method="post" action="{{base}}/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="quiet small">Sign out</button></form>
+    </div>
+  </div>
+</header>
 {{end}}
 <main>
-{{with .Flash}}<div class="flash">{{.}}</div>{{end}}
+{{with .Flash}}<div class="flash flash-{{.Kind}}" role="status">{{.Text}}</div>{{end}}
 {{template "content" .}}
 </main>
+<div id="toasts" class="toasts" aria-live="polite"></div>
 </body>
 </html>
+
+{{/* badge shows a state name, such as running or ready, in its colour. */}}
+{{define "badge"}}<span class="badge b-{{.}}">{{.}}</span>{{end}}
+
+{{/* nodebadge shows a node's state, whose label may say more than its class. */}}
+{{define "nodebadge"}}<span class="badge b-{{.Class}}">{{.Label}}</span>{{end}}
+
+{{/* path shows a library path with its folder muted. */}}
+{{define "path"}}{{$p := splitPath .}}<span class="dir">{{$p.Dir}}</span><span class="file">{{$p.File}}</span>{{end}}
+
+{{/* progress shows a running job's stage and fraction. */}}
+{{define "progress"}}<div class="progress"><progress max="1" value="{{.Fraction}}">{{pct .Fraction}}</progress><span>{{with .Stage}}{{.}} · {{end}}{{pct .Fraction}}</span></div>{{end}}
+
+{{/* jobactions shows the buttons that apply to a job in its state. With
+     htmx they redraw the queue or the job page in place. */}}
+{{define "jobactions"}}
+{{$target := "#queue-body"}}{{if eq .From "job"}}{{$target = "#job"}}{{end}}
+{{if eq .State "queued"}}
+<form method="post" action="{{base}}/jobs/{{.ID}}/bump" hx-post="{{base}}/jobs/{{.ID}}/bump" hx-target="{{$target}}" hx-swap="outerHTML"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="from" value="{{.From}}"><button class="small" title="Move to the front of the queue">Bump</button></form>
+{{end}}
+{{if or (eq .State "queued") (eq .State "running")}}
+<form method="post" action="{{base}}/jobs/{{.ID}}/cancel" hx-post="{{base}}/jobs/{{.ID}}/cancel" hx-target="{{$target}}" hx-swap="outerHTML" hx-confirm="Cancel this job?{{if eq .State "running"}} The encode in progress is lost.{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="from" value="{{.From}}"><button class="small danger">Cancel</button></form>
+{{end}}
+{{if or (eq .State "failed") (eq .State "cancelled")}}
+<form method="post" action="{{base}}/jobs/{{.ID}}/retry" hx-post="{{base}}/jobs/{{.ID}}/retry" hx-target="{{$target}}" hx-swap="outerHTML"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="from" value="{{.From}}"><button class="small">Retry</button></form>
+{{end}}
+{{end}}
+
+{{/* toast is a message appended to the toast region by an htmx response. */}}
+{{define "toast"}}<div id="toasts" hx-swap-oob="beforeend"><div class="toast toast-{{.Kind}}" role="status">{{.Text}}</div></div>{{end}}

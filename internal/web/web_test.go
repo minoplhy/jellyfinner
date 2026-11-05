@@ -59,9 +59,13 @@ func newFixture(t *testing.T) *fixture { return newFixtureAt(t, "") }
 func newFixtureAt(t *testing.T, base string) *fixture {
 	t.Helper()
 	root := t.TempDir()
+	adminURL := ""
+	if base != "" {
+		adminURL = "http://admin.test" + base
+	}
 	cfg := &config.Config{
-		WebBasePath: base,
-		Mode:        config.ModeAuto, OriginalsDir: filepath.Join(root, "o"), LibraryDir: filepath.Join(root, "l"),
+		AdminURL: adminURL,
+		Mode:     config.ModeAuto, OriginalsDir: filepath.Join(root, "o"), LibraryDir: filepath.Join(root, "l"),
 		IncomingDir: filepath.Join(root, "i"), RemoteOriginals: "origin:/o", RemoteIncoming: "origin:/i",
 		LeaseFor: time.Minute, MaxAttempts: 2, StableFor: time.Minute, DeleteGrace: time.Hour, MassDeletePercent: 20,
 	}
@@ -92,6 +96,9 @@ func newFixtureAt(t *testing.T, base string) *fixture {
 func (f *fixture) add(path string) {
 	f.t.Helper()
 	full := filepath.Join(f.cfg.OriginalsDir, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		f.t.Fatal(err)
+	}
 	if err := os.WriteFile(full, []byte("x"), 0o640); err != nil {
 		f.t.Fatal(err)
 	}
@@ -172,30 +179,33 @@ func (f *fixture) post(c *http.Client, path string, form url.Values) (int, strin
 func TestEveryPageNeedsLogin(t *testing.T) {
 	f := newFixture(t)
 	c := f.client()
-	for _, path := range []string{"/", "/queue", "/library", "/jobs/x"} {
+	for _, path := range []string{"/", "/queue", "/library", "/nodes", "/jobs/x", "/jobs/x/log"} {
 		got, _ := f.get(c, path)
 		if got != http.StatusSeeOther {
 			t.Errorf("GET %s = %d", path, got)
 		}
 	}
-	for _, path := range []string{"/library/add", "/library/reencode", "/library/reencode/confirm", "/jobs/x/cancel", "/logout"} {
+	for _, path := range []string{"/library/add", "/library/reencode", "/library/reencode/confirm", "/jobs/x/cancel", "/logout",
+		"/scan", "/backfill/start", "/nodes/add", "/nodes/worker1/rotate", "/nodes/worker1/delete"} {
 		got, _ := f.post(c, path, url.Values{})
 		if got != http.StatusUnauthorized {
 			t.Errorf("POST %s = %d", path, got)
 		}
 	}
-	req, err := http.NewRequest(http.MethodGet, f.server.URL+"/fragments/queue", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("HX-Request", "true")
-	resp, err := c.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("an expired fragment must not swap in the login page: %d", resp.StatusCode)
+	for _, path := range []string{"/fragments/queue", "/fragments/dashboard", "/fragments/library", "/fragments/nodes/workers", "/fragments/jobs/x"} {
+		req, err := http.NewRequest(http.MethodGet, f.server.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("HX-Request", "true")
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("an expired %s must not swap in the login page: %d", path, resp.StatusCode)
+		}
 	}
 }
 
@@ -278,6 +288,23 @@ func TestCookieFlags(t *testing.T) {
 	}
 	if cookie == nil || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
 		t.Errorf("cookie = %+v", cookie)
+	}
+}
+
+// An https ADMIN_URL marks the cookie secure even when a proxy in front sends
+// no X-Forwarded-Proto.
+func TestHTTPSAdminURLMakesCookieSecure(t *testing.T) {
+	f := newFixture(t)
+	f.cfg.AdminURL = "https://admin.test"
+	resp, err := f.client().PostForm(f.server.URL+"/login", url.Values{"username": {"admin"}, "password": {"pw"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	for _, c := range resp.Cookies() {
+		if c.Name == cookieName && !c.Secure {
+			t.Errorf("cookie = %+v", c)
+		}
 	}
 }
 
@@ -403,7 +430,7 @@ func TestSecurityHeaders(t *testing.T) {
 
 func TestStaticAssets(t *testing.T) {
 	f := newFixture(t)
-	for _, path := range []string{"/static/htmx.min.js", "/static/app.css"} {
+	for _, path := range []string{"/static/htmx.min.js", "/static/app.css", "/static/app.js"} {
 		if got, _ := f.get(f.client(), path); got != http.StatusOK {
 			t.Errorf("%s = %d", path, got)
 		}
@@ -458,6 +485,63 @@ func TestNodesPageAndCacheAction(t *testing.T) {
 	if ps, _ := f.store.NodePlacements("edge1"); ps[0].State != queue.PlacementDeleting {
 		t.Errorf("state = %s", ps[0].State)
 	}
+}
+
+// The dashboard and the Nodes page judge a node the same way, and the Nodes
+// page lists encoding nodes as well as edge nodes.
+func TestNodeStatesAgreeAcrossPages(t *testing.T) {
+	f := newFixture(t)
+	for _, name := range []string{"edge1", "edge2", "edge3"} {
+		if err := f.store.AddNode(&queue.Node{Name: name, Kind: queue.NodeEdge, TokenHash: "x" + name, URL: "https://" + name + ".example.com", QuotaBytes: 1000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// worker2 has made no call since the orchestrator started.
+	if err := f.store.AddNode(&queue.Node{Name: "worker2", Kind: queue.NodeWorker, TokenHash: "xw2"}); err != nil {
+		t.Fatal(err)
+	}
+	// edge1 reports and passes its probe, edge2 reports but fails it, and
+	// edge3 has never reported.
+	for _, name := range []string{"edge1", "edge2"} {
+		if err := f.store.NodeSeen(name, 500, 1000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.store.SetNodeHealth("edge1", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SetNodeHealth("edge2", false); err != nil {
+		t.Fatal(err)
+	}
+	c := f.admin()
+	_, dash := f.get(c, "/fragments/dashboard")
+	code, nodes := f.get(c, "/nodes")
+	if code != http.StatusOK {
+		t.Fatalf("nodes = %d", code)
+	}
+	badge := regexp.MustCompile(`(?s)node-(\w+)".*?class="badge b-(\w+)"`)
+	states := func(body string) map[string]string {
+		got := map[string]string{}
+		for _, m := range badge.FindAllStringSubmatch(body, -1) {
+			got[m[1]] = m[2]
+		}
+		return got
+	}
+	want := map[string]string{"worker1": "online", "worker2": "unseen", "edge1": "online", "edge2": "unhealthy", "edge3": "unseen"}
+	for page, body := range map[string]string{"dashboard": dash, "nodes": nodes} {
+		got := states(body)
+		for name, state := range want {
+			if got[name] != state {
+				t.Errorf("%s: %s = %q, want %q", page, name, got[name], state)
+			}
+		}
+	}
+	for _, text := range []string{"Encoding nodes", "Edge nodes", "unhealthy: probe failing", "never reported", "not seen since restart"} {
+		if !strings.Contains(nodes, text) {
+			t.Errorf("nodes page missing %q", text)
+		}
+	}
+
 }
 
 func TestNoNodesConfiguredHidesCacheAction(t *testing.T) {

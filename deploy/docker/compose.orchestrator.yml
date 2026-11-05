@@ -37,9 +37,11 @@ x-app: &app
     # Source data backfill may start per day. Size it from encode time on small workers.
     BACKFILL_DAILY_GB: "2"
     # Admin UI. Login goes through Jellyfin.
-    WEB_ADDR: 0.0.0.0:8202
-    # To serve the admin UI under a path instead of its own hostname.
-    # WEB_BASE_PATH: /jellyfinner-admin
+    ADMIN_ADDR: 0.0.0.0:8202
+    # The address people open for the admin UI, needed to serve it under a path
+    # such as https://example.com/jellyfinner-admin. An https address always
+    # marks the login cookie secure, so leave it unset for plain http.
+    # ADMIN_URL: https://admin.example.com
     # Edge delivery: alice=edge1;bob=edge1
     EDGE_VIEWERS: ""
   volumes:

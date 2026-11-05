@@ -210,6 +210,74 @@ func TestFailRetriesThenStops(t *testing.T) {
 	}
 }
 
+func TestFailedByNodeCountsRecentFinalFailures(t *testing.T) {
+	s, c := open(t)
+	addJob(t, s, "old", PriorityNew)
+	j := claim(t, s)
+	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 1); err != nil {
+		t.Fatal(err)
+	}
+	c.add(25 * time.Hour)
+	addJob(t, s, "new", PriorityNew)
+	j = claim(t, s)
+	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 1); err != nil {
+		t.Fatal(err)
+	}
+	addJob(t, s, "retrying", PriorityNew)
+	j = claim(t, s)
+	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 3); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.FailedByNode(c.now().Add(-24 * time.Hour))
+	if err != nil || len(got) != 1 || got["worker1"] != 1 {
+		t.Errorf("FailedByNode = %v, %v", got, err)
+	}
+}
+
+func TestListFiltered(t *testing.T) {
+	s, _ := open(t)
+	for _, id := range []string{"a", "b", "c", "100%_x"} {
+		addJob(t, s, id, PriorityNew)
+	}
+	j := claim(t, s)
+	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 1); err != nil {
+		t.Fatal(err)
+	}
+	ids := func(f JobFilter, limit, offset int) (string, int) {
+		t.Helper()
+		jobs, total, err := s.ListFiltered(f, limit, offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, j := range jobs {
+			got = append(got, j.ID)
+		}
+		return strings.Join(got, ","), total
+	}
+	if got, total := ids(JobFilter{State: StateFailed, Node: "worker1"}, 10, 0); got != j.ID || total != 1 {
+		t.Errorf("failed on worker1 = %q, %d", got, total)
+	}
+	if got, total := ids(JobFilter{Node: "worker2"}, 10, 0); got != "" || total != 0 {
+		t.Errorf("worker2 = %q, %d", got, total)
+	}
+	if _, total := ids(JobFilter{State: StateQueued}, 10, 0); total != 3 {
+		t.Errorf("queued total = %d", total)
+	}
+	first, total := ids(JobFilter{}, 2, 0)
+	second, _ := ids(JobFilter{}, 2, 2)
+	if total != 4 || len(strings.Split(first, ",")) != 2 || len(strings.Split(second, ",")) != 2 || first == second {
+		t.Errorf("pages = %q then %q of %d", first, second, total)
+	}
+	// % and _ in a search are literal, and case does not matter.
+	if got, _ := ids(JobFilter{Search: "0%_X"}, 10, 0); got != "100%_x" {
+		t.Errorf("literal search = %q", got)
+	}
+	if got, _ := ids(JobFilter{Search: "%"}, 10, 0); got != "100%_x" {
+		t.Errorf("percent search = %q", got)
+	}
+}
+
 func TestCancelRunningReachesWorker(t *testing.T) {
 	s, _ := open(t)
 	addJob(t, s, "a", PriorityNew)
