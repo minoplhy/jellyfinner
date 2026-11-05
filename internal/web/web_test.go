@@ -186,7 +186,7 @@ func TestEveryPageNeedsLogin(t *testing.T) {
 			t.Errorf("GET %s = %d", path, got)
 		}
 	}
-	for _, path := range []string{"/library/add", "/library/reencode", "/library/reencode/confirm", "/jobs/x/cancel", "/logout",
+	for _, path := range []string{"/library/add", "/library/reencode", "/library/reencode/confirm", "/jobs/x/cancel", "/jobs/x/requeue", "/logout",
 		"/scan", "/backfill/start", "/nodes/add", "/nodes/worker1/rotate", "/nodes/worker1/delete", "/nodes/worker1/pause", "/cloud/pause", "/cloud/servers/x/drain"} {
 		got, _ := f.post(c, path, url.Values{})
 		if got != http.StatusUnauthorized {

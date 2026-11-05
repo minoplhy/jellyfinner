@@ -71,6 +71,7 @@ The admin UI covers the queue, library, nodes and monthly usage, and does what t
 orchestrator queue list
 orchestrator queue add "Movies/Dune (2021)/Dune (2021).mkv"
 orchestrator queue reencode "Movies/Dune (2021)/Dune (2021).mkv" --reason "audio out of sync" --force-encode
+orchestrator queue requeue JOB --pause   # take it from its worker mid-encode; --pause also pauses that worker
 orchestrator queue cancel JOB
 orchestrator queue retry JOB
 

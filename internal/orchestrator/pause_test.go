@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -60,5 +61,80 @@ func TestPauseNode(t *testing.T) {
 		if n.Paused {
 			t.Errorf("%s still paused after resume all", n.Name)
 		}
+	}
+}
+
+func TestRequeueTakesAJobFromItsWorker(t *testing.T) {
+	f := newFixture(t)
+	for _, name := range []string{"worker1", "worker2"} {
+		if err := f.svc.Nodes.Add(&model.Node{Name: name, Kind: model.NodeWorker, TokenHash: name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.store.Enqueue(&model.Job{ID: "a", Path: "a.mkv", OutputPath: "a.mp4", Priority: model.PriorityNew}); err != nil {
+		t.Fatal(err)
+	}
+	j, _ := f.store.Claim("worker1", time.Minute)
+	if j == nil {
+		t.Fatal("no claim")
+	}
+
+	// Without pause, the same worker may take it straight back.
+	if node, err := f.svc.Requeue("a", false); err != nil || node != "worker1" {
+		t.Fatalf("Requeue = %q, %v", node, err)
+	}
+	if j, _ = f.store.Claim("worker1", time.Minute); j == nil || j.Attempts != 1 {
+		t.Fatalf("worker1 could not claim it back: %+v", j)
+	}
+
+	// With pause, it cannot, and another worker gets it.
+	if _, err := f.svc.Requeue("a", true); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := f.store.Claim("worker1", time.Minute); again != nil {
+		t.Fatal("a worker paused by requeue claimed the job back")
+	}
+	if other, _ := f.store.Claim("worker2", time.Minute); other == nil || other.ID != "a" {
+		t.Errorf("worker2 claim = %+v", other)
+	}
+
+	if _, err := f.svc.Requeue("missing", true); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("unknown job: %v", err)
+	}
+	if err := f.svc.ResumeNode("worker1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Requeue("a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.Requeue("a", true); err == nil {
+		t.Error("requeued a queued job")
+	}
+	if nodes, _ := f.store.LoadNodes(); nodes[0].Paused || nodes[1].Paused {
+		t.Errorf("a refused requeue must not pause anyone: %+v", nodes)
+	}
+}
+
+func TestRequeueWithPauseDrainsACloudServer(t *testing.T) {
+	cf := newCloud(t, "alpha")
+	r, err := cf.cloud.Start(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf.seen[r.Name] = cf.now
+	cf.queue("a", model.PriorityNew)
+	if j, _ := cf.store.Claim(r.Name, time.Hour); j == nil {
+		t.Fatal("the cloud server could not claim")
+	}
+	cf.tick()
+	if got := cf.servers()[0]; got.State != model.CloudReady {
+		t.Fatalf("before requeue: %+v", got)
+	}
+	if _, err := cf.svc.Requeue("a", true); err != nil {
+		t.Fatal(err)
+	}
+	cf.tick()
+	if got := cf.servers()[0]; got.State != model.CloudDraining && got.State != model.CloudDeleting {
+		t.Errorf("a paused cloud server must drain: %+v", got)
 	}
 }

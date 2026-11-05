@@ -61,6 +61,7 @@ const usage = `usage: orchestrator [--env FILE] COMMAND
   queue list
   queue add SOURCE
   queue reencode SOURCE --reason TEXT [--force-encode] [--software]
+  queue requeue JOB [--pause]  take a running job from its worker and queue it again
   queue cancel JOB
   queue bump JOB
   queue retry JOB
@@ -476,6 +477,8 @@ func queueCommand(envFile string, args []string) error {
 		return nil
 	case "reencode":
 		return reencode(svc, rest)
+	case "requeue":
+		return requeue(svc, rest)
 	case "cancel", "bump", "retry":
 		if len(rest) != 1 {
 			return fmt.Errorf("queue %s needs one JOB", command)
@@ -489,6 +492,28 @@ func queueCommand(envFile string, args []string) error {
 		return store.Retry(rest[0])
 	}
 	return fmt.Errorf("unknown queue command %q", command)
+}
+
+// requeue takes a running job from its worker and queues it again.
+func requeue(svc *orchestrator.Service, args []string) error {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return errors.New("queue requeue needs a JOB, then optionally --pause")
+	}
+	id := args[0]
+	fs := flag.NewFlagSet("requeue", flag.ExitOnError)
+	pause := fs.Bool("pause", false, "also pause the worker, so it takes no new job; a cloud server is drained and deleted")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	node, err := svc.Requeue(id, *pause)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Took %s from %s and queued it again. The worker stops at its next heartbeat; the attempt is not counted.\n", id, node)
+	if *pause {
+		fmt.Printf("%s is paused. Resume it with: orchestrator node resume %s\n", node, node)
+	}
+	return nil
 }
 
 func reencode(svc *orchestrator.Service, args []string) error {

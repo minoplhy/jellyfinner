@@ -754,3 +754,72 @@ func (x suite) TestOutcomesAndJobTiming(t *testing.T) {
 		t.Errorf("Outcomes after the fact = %+v", got)
 	}
 }
+
+func (x suite) TestRequeueRunningJob(t *testing.T) {
+	s, _ := x.open(t, database.Options{})
+	if _, err := s.Requeue("missing"); !errors.Is(err, model.ErrNotFound) {
+		t.Errorf("Requeue(missing) = %v, want ErrNotFound", err)
+	}
+	addJob(t, s, "a", model.PriorityNew)
+	if _, err := s.Requeue("a"); err == nil {
+		t.Error("requeued a queued job")
+	}
+
+	j := claim(t, s)
+	node, err := s.Requeue(j.ID)
+	if err != nil || node != "worker1" {
+		t.Fatalf("Requeue = %q, %v", node, err)
+	}
+	got, err := s.Get(j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != model.StateQueued || got.Attempts != 0 || got.LeaseID != "" || got.Stage != "" {
+		t.Errorf("after requeue: %+v", got)
+	}
+	// The worker learns at its next heartbeat, and its result is refused.
+	if _, err := s.Heartbeat(j.ID, j.LeaseID, "encode", 0.5, time.Minute); !errors.Is(err, model.ErrLeaseLost) {
+		t.Errorf("Heartbeat with the old lease = %v", err)
+	}
+	if err := s.Complete(j.ID, j.LeaseID, "{}", ""); !errors.Is(err, model.ErrLeaseLost) {
+		t.Errorf("Complete with the old lease = %v", err)
+	}
+	if _, err := s.Fail(j.ID, j.LeaseID, "boom", "", 3); !errors.Is(err, model.ErrLeaseLost) {
+		t.Errorf("Fail with the old lease = %v", err)
+	}
+
+	// Any worker may claim it again, the same one included.
+	again, err := s.Claim("worker2", time.Minute)
+	if err != nil || again == nil || again.ID != j.ID || again.Attempts != 1 {
+		t.Fatalf("worker2 claim = %+v, %v", again, err)
+	}
+	if _, err := s.Requeue(j.ID); err != nil {
+		t.Fatal(err)
+	}
+	if same := claim(t, s); same == nil || same.ID != j.ID {
+		t.Errorf("the same worker could not claim it back: %+v", same)
+	}
+
+	// Publishing and finished jobs stay where they are.
+	if err := s.Complete(j.ID, mustLease(t, s, j.ID), "{}", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Requeue(j.ID); err == nil {
+		t.Error("requeued a publishing job")
+	}
+	if err := s.MarkDone(j.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Requeue(j.ID); err == nil {
+		t.Error("requeued a done job")
+	}
+}
+
+func mustLease(t *testing.T, s database.Store, id string) string {
+	t.Helper()
+	j, err := s.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return j.LeaseID
+}

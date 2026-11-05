@@ -102,6 +102,10 @@ type JobStore interface {
 	Complete(id, lease, manifest, log string) error
 	// Release requeues a job its worker gave up, giving the attempt back.
 	Release(id, lease string) error
+	// Requeue takes a running job from its worker and queues it again without
+	// spending an attempt, returning the node it came from. Only a running job
+	// can be requeued.
+	Requeue(id string) (string, error)
 	// Fail records a worker failure. The job is retried after RetryDelay
 	// times its attempts until maxAttempts, and true is returned once it has
 	// failed for good.

@@ -226,6 +226,17 @@ func (s *Server) jobAction(w http.ResponseWriter, r *http.Request, sess *session
 		err, done = s.svc.Store.Bump(id), "Moved to the front of the queue."
 	case "retry":
 		err, done = s.svc.Store.Retry(id), "Queued again."
+	case "requeue":
+		pause := r.PostForm.Get("pause") != ""
+		var node string
+		node, err = s.svc.Requeue(id, pause)
+		done = "Taken from " + node + " and queued again. It stops within about a heartbeat, 15 seconds by default."
+		if pause {
+			done += " " + node + " is paused until you resume it."
+		}
+		if err == nil {
+			s.log.Printf("web: %s requeued job %s from %s (pause %v)", sess.user, id, node, pause)
+		}
 	default:
 		http.NotFound(w, r)
 		return

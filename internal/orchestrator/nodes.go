@@ -90,6 +90,31 @@ func (s *Service) setPaused(name string, paused bool) error {
 	return s.Nodes.SetPaused(name, paused)
 }
 
+// Requeue takes a running job from its worker and queues it again, for any
+// worker to claim. With pause, the worker is paused first, so it cannot claim
+// the job straight back; a paused cloud server drains and is deleted. If the
+// job ends in between, the pause stays and the error says so.
+func (s *Service) Requeue(id string, pause bool) (string, error) {
+	if pause {
+		j, err := s.Store.Get(id)
+		if err != nil {
+			return "", err
+		}
+		if j.State != model.StateRunning || j.Node == "" {
+			return "", fmt.Errorf("job %s is %s, not running", id, j.State)
+		}
+		if err := s.PauseNode(j.Node); err != nil {
+			return "", err
+		}
+	}
+	node, err := s.Store.Requeue(id)
+	if err != nil {
+		return node, err
+	}
+	s.Log.Printf("requeued job %s from %s", id, node)
+	return node, nil
+}
+
 // SetAllWorkersPaused pauses or resumes every worker, and returns their names.
 func (s *Service) SetAllWorkersPaused(paused bool) ([]string, error) {
 	all, err := s.Store.LoadNodes()

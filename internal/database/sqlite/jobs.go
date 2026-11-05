@@ -313,6 +313,31 @@ func (s *Store) Release(id, lease string) error {
 	return leaseResult(res, err)
 }
 
+// Requeue takes a running job from its worker and queues it again, without
+// spending an attempt. The worker's next heartbeat finds its lease gone, so it
+// stops and drops its result. It returns the node the job came from.
+func (s *Store) Requeue(id string) (string, error) {
+	var node string
+	err := s.tx(func(tx *sql.Tx) error {
+		var state string
+		err := tx.QueryRow(`SELECT state, node FROM jobs WHERE id = ?`, id).Scan(&state, &node)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("job %s: %w", id, model.ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		if state != model.StateRunning {
+			return fmt.Errorf("job %s is %s, not running", id, state)
+		}
+		_, err = tx.Exec(`UPDATE jobs SET state = ?, attempts = MAX(attempts - 1, 0), lease_id = '', stage = '', fraction = 0,
+			not_before = 0, updated = ? WHERE id = ? AND state = ?`,
+			model.StateQueued, s.now().Unix(), id, model.StateRunning)
+		return err
+	})
+	return node, err
+}
+
 // Fail records a worker failure. The job is retried until maxAttempts, and
 // true is returned once it has failed for good.
 func (s *Store) Fail(id, lease, reason, log string, maxAttempts int) (bool, error) {

@@ -57,6 +57,9 @@
 {{if eq .State "queued"}}
 <form method="post" action="{{base}}/jobs/{{.ID}}/bump" hx-post="{{base}}/jobs/{{.ID}}/bump" hx-target="{{$target}}" hx-swap="outerHTML"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="from" value="{{.From}}"><button class="small" title="Move to the front of the queue">Bump</button></form>
 {{end}}
+{{if eq .State "running"}}
+<form method="post" action="{{base}}/jobs/{{.ID}}/requeue" hx-post="{{base}}/jobs/{{.ID}}/requeue" hx-target="{{$target}}" hx-swap="outerHTML" hx-confirm="Take this job from its worker and queue it again? The encode in progress is lost; the attempt is not counted."><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="from" value="{{.From}}"><label class="check small" title="It takes no new job until you resume it. A cloud server is drained and deleted."><input type="checkbox" name="pause"> pause the worker</label><button class="small" title="Take it from its worker; any worker may claim it">Requeue</button></form>
+{{end}}
 {{if or (eq .State "queued") (eq .State "running")}}
 <form method="post" action="{{base}}/jobs/{{.ID}}/cancel" hx-post="{{base}}/jobs/{{.ID}}/cancel" hx-target="{{$target}}" hx-swap="outerHTML" hx-confirm="Cancel this job?{{if eq .State "running"}} The encode in progress is lost.{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="from" value="{{.From}}"><button class="small danger">Cancel</button></form>
 {{end}}
