@@ -1,6 +1,6 @@
 # Orchestrator node: serve and the CLI, one binary. Needs cgo for SQLite.
 # Build from the repository root.
-FROM golang:1.27-bookworm AS build
+FROM golang:1.27-trixie AS build
 # One compile job, so builds fit on small machines.
 ENV GOFLAGS=-p=1
 WORKDIR /src
@@ -12,7 +12,7 @@ COPY internal internal
 ARG VERSION=dev
 RUN go build -ldflags "-X jellyfinner/internal/buildinfo.Version=$VERSION" -o /out/orchestrator ./cmd/orchestrator
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 jellyfinner \

@@ -2,7 +2,7 @@
 # runs both `pull` and `serve`. Build from the repository root. /edge is group
 # 101, shared by serve and by the official nginx image's user, so either can
 # read what pull writes.
-FROM golang:1.27-bookworm AS build
+FROM golang:1.27-trixie AS build
 # One compile job, so builds fit on small machines.
 ENV GOFLAGS=-p=1
 WORKDIR /src

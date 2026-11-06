@@ -1,7 +1,7 @@
 # Router: runs next to Jellyfin, in front of it, and sends viewers to their
 # edge node. A static binary on an empty image, with no shell and no database.
 # Build from the repository root.
-FROM golang:1.27-bookworm AS build
+FROM golang:1.27-trixie AS build
 # One compile job, so builds fit on small machines.
 ENV GOFLAGS=-p=1
 WORKDIR /src

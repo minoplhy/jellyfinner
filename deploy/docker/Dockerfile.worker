@@ -3,7 +3,7 @@
 # bundles the VAAPI user-mode drivers, and its arm64 build includes RKMPP.
 # The compile runs on the build machine for any target, so an arm64 image needs
 # no emulated Go build.
-FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS build
 ARG TARGETOS TARGETARCH
 # One compile job, so builds fit on small machines.
 ENV GOFLAGS=-p=1
@@ -16,11 +16,11 @@ COPY internal internal
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-X jellyfinner/internal/buildinfo.Version=$VERSION" -o /out/worker ./cmd/worker
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
     && install -d -m 755 /etc/apt/keyrings \
     && curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg \
-    && printf 'Types: deb\nURIs: https://repo.jellyfin.org/debian\nSuites: bookworm\nComponents: main\nSigned-By: /etc/apt/keyrings/jellyfin.gpg\n' > /etc/apt/sources.list.d/jellyfin.sources \
+    && printf 'Types: deb\nURIs: https://repo.jellyfin.org/debian\nSuites: trixie\nComponents: main\nSigned-By: /etc/apt/keyrings/jellyfin.gpg\n' > /etc/apt/sources.list.d/jellyfin.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends jellyfin-ffmpeg8 rclone openssh-client \
     && apt-get purge -y curl gnupg && apt-get autoremove -y \
