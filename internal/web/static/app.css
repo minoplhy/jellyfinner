@@ -95,10 +95,10 @@ h1.path { font-size: 18px; line-height: 1.4; }
 /* Badges: one class per state, shared by jobs, titles, nodes and placements. */
 .badge { display: inline-flex; align-items: center; gap: 6px; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 550; white-space: nowrap; background: var(--idle-bg); color: var(--muted); }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.b-done, .b-ready, .b-active, .b-online, .b-auto { background: var(--good-bg); color: var(--good); }
+.b-done, .b-ready, .b-active, .b-online, .b-auto, .b-hardware { background: var(--good-bg); color: var(--good); }
 .b-failed, .b-offline, .b-missing { background: var(--bad-bg); color: var(--bad); }
 .b-running, .b-publishing, .b-encoding, .b-pulling, .b-manual, .b-booting { background: var(--info-bg); color: var(--info); }
-.b-queued, .b-unhealthy, .b-deleting, .b-backlog, .b-paused, .b-draining { background: var(--warn-bg); color: var(--warn); }
+.b-queued, .b-unhealthy, .b-deleting, .b-backlog, .b-paused, .b-draining, .b-fallback { background: var(--warn-bg); color: var(--warn); }
 .b-running::before, .b-encoding::before, .b-pulling::before, .b-publishing::before { animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.25; } }
 @media (prefers-reduced-motion: reduce) { .badge::before { animation: none !important; } }
@@ -213,3 +213,6 @@ pre.secret { background: var(--sunken); border: 1px solid var(--line); border-ra
 .page-head h2 { margin: 0; }
 .page-head + .page-head, .panel + .page-head, p + .page-head { margin-top: 28px; }
 details.add.panel:not([open]) { background: none; border: 0; padding: 0; box-shadow: none; }
+
+.footer { max-width: 1200px; margin: 0 auto; padding: 0 24px 24px; }
+.nodeinfo { display: block; font-weight: normal; }

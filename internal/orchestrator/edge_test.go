@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"jellyfinner/internal/edge"
 	"jellyfinner/internal/model"
 )
 
@@ -226,5 +227,26 @@ func TestProbeUnderAPath(t *testing.T) {
 	f.svc.probeNodes(context.Background())
 	if st, err := f.store.GetNodeStatus("edge1"); err != nil || !st.Healthy {
 		t.Errorf("status = %+v, %v", st, err)
+	}
+}
+
+// The probe is signed with the node's key, and keeps the build the file
+// server answers with.
+func TestProbeRecordsServeBuild(t *testing.T) {
+	f := newFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if edge.CheckSignedURL("signkey", edge.HealthPath, q.Get("md5"), q.Get("expires"), time.Now()) == nil {
+			w.Header().Set(edge.BuildHeader, "jellyfinner-edge-serve/1.2.3 (linux/amd64; go1.27)")
+		}
+	}))
+	defer srv.Close()
+	if err := f.svc.Nodes.Add(&model.Node{ID: "edge1", Name: "edge1", Kind: model.NodeEdge, TokenHash: "x", URL: srv.URL, SigningKey: "signkey"}); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.Now = time.Now
+	f.svc.probeNodes(context.Background())
+	if got := f.svc.ServeBuild("edge1"); got != "jellyfinner-edge-serve/1.2.3 (linux/amd64; go1.27)" {
+		t.Errorf("serve build = %q", got)
 	}
 }

@@ -62,7 +62,7 @@ docker compose exec orchestrator orchestrator node add worker1
 - [Docker Compose](deploy/docker/README.md): the main path
 - [systemd on the host](deploy/README.md): the alternative
 
-`docker compose run --rm SERVICE doctor` checks a node from inside its container. [.env.example](.env.example) lists every setting.
+`docker compose run --rm SERVICE doctor` checks a node from inside its container, and `SERVICE version` prints its build. [.env.example](.env.example) lists every setting.
 
 ## Everyday use
 

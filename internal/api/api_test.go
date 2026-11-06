@@ -108,11 +108,11 @@ func TestClaimHeartbeatFinish(t *testing.T) {
 	f := newFixture(t, allNodes())
 	ctx := context.Background()
 
-	if claim, err := f.client.Claim(ctx); err != nil || claim != nil {
+	if claim, err := f.client.Claim(ctx, nil); err != nil || claim != nil {
 		t.Fatalf("empty Claim = %+v, %v", claim, err)
 	}
 	f.enqueue(t, "a")
-	claim, err := f.client.Claim(ctx)
+	claim, err := f.client.Claim(ctx, nil)
 	if err != nil || claim == nil || claim.Job.Source != "origin:/a.mkv" || claim.Lease == "" {
 		t.Fatalf("Claim = %+v, %v", claim, err)
 	}
@@ -136,7 +136,7 @@ func TestClaimHeartbeatFinish(t *testing.T) {
 func TestCompleteNeedsManifest(t *testing.T) {
 	f := newFixture(t, allNodes())
 	f.enqueue(t, "a")
-	claim, err := f.client.Claim(context.Background())
+	claim, err := f.client.Claim(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestFinishFailureRetriesThenReports(t *testing.T) {
 	ctx := context.Background()
 	f.enqueue(t, "a")
 	for attempt := 1; attempt <= 2; attempt++ {
-		claim, err := f.client.Claim(ctx)
+		claim, err := f.client.Claim(ctx, nil)
 		if err != nil || claim == nil {
 			t.Fatalf("attempt %d: %+v, %v", attempt, claim, err)
 		}
@@ -167,7 +167,7 @@ func TestStaleLeaseGetsConflict(t *testing.T) {
 	f := newFixture(t, allNodes())
 	ctx := context.Background()
 	f.enqueue(t, "a")
-	if _, err := f.client.Claim(ctx); err != nil {
+	if _, err := f.client.Claim(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.client.Heartbeat(ctx, "a", control.HeartbeatRequest{Lease: "wrong"}); !errors.Is(err, control.ErrLeaseLost) {
@@ -183,7 +183,7 @@ func TestCancelReachesHeartbeat(t *testing.T) {
 	f := newFixture(t, allNodes())
 	ctx := context.Background()
 	f.enqueue(t, "a")
-	claim, err := f.client.Claim(ctx)
+	claim, err := f.client.Claim(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestClientRefusesUntrustedCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Claim(context.Background()); err == nil {
+	if _, err := client.Claim(context.Background(), nil); err == nil {
 		t.Error("a self-signed certificate must stop the node")
 	}
 }
@@ -306,7 +306,7 @@ func TestRolesAreSeparate(t *testing.T) {
 	f, edgeClient, _ := edgeFixture(t)
 	ctx := context.Background()
 	f.enqueue(t, "a")
-	if _, err := edgeClient.Claim(ctx); err == nil {
+	if _, err := edgeClient.Claim(ctx, nil); err == nil {
 		t.Error("an edge node must never take encode jobs")
 	}
 	if _, err := f.client.EdgePoll(ctx, control.EdgePollRequest{}); err == nil {
@@ -342,7 +342,7 @@ func TestRouterResolves(t *testing.T) {
 	}
 
 	f.enqueue(t, "a")
-	if claim, err := router.Claim(ctx); err == nil || claim != nil {
+	if claim, err := router.Claim(ctx, nil); err == nil || claim != nil {
 		t.Error("a router must never take encode jobs")
 	}
 	if _, err := router.Heartbeat(ctx, "a", control.HeartbeatRequest{Lease: "x"}); err == nil {
@@ -534,7 +534,7 @@ func TestWhoAmI(t *testing.T) {
 	if _, err := wrong.WhoAmI(context.Background()); err == nil {
 		t.Error("a wrong token must be refused")
 	}
-	if claim, err := f.client.Claim(context.Background()); err != nil || claim == nil {
+	if claim, err := f.client.Claim(context.Background(), nil); err != nil || claim == nil {
 		t.Errorf("whoami must leave the job queued: %v, %v", claim, err)
 	}
 }
@@ -556,7 +556,7 @@ func TestReleaseGivesTheAttemptBack(t *testing.T) {
 	f := newFixture(t, allNodes())
 	ctx := context.Background()
 	f.enqueue(t, "a")
-	claim, err := f.client.Claim(ctx)
+	claim, err := f.client.Claim(ctx, nil)
 	if err != nil || claim == nil {
 		t.Fatalf("claim: %+v, %v", claim, err)
 	}

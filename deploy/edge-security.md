@@ -20,6 +20,7 @@ The node runs one binary as two processes. `edge-agent pull` connects out, can w
 | Nodes see only their own orders | One node could not activate another's file |
 | Roles are separate | An edge token got 403 on job claims, and a worker token got 403 on edge routes |
 | Viewers' Jellyfin tokens stay on the orchestrator node | The redirect URL was checked for the token |
+| `/health` shows the build only to the orchestrator | Plain, wrong-key and expired probes got `ok` with no build header. Only a probe signed with the node's key, as the orchestrator sends every 30 seconds, gets `X-Jellyfinner-Build`. Covered by a unit test, not yet on a real node |
 | Router faults fall back to the origin | Bad token, unhealthy node, silent agent and a closed database all passed through |
 
 ## What must be checked on a real node

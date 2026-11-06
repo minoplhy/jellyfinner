@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"jellyfinner/internal/buildinfo"
 	"jellyfinner/internal/control"
 	"jellyfinner/internal/doctor"
 	"jellyfinner/internal/edgeagent"
@@ -30,6 +31,7 @@ const usage = `usage: edge-agent pull [--url URL] [--dir DIR] [--poll D] [--limi
        edge-agent health pull | health serve [ADDR]
        edge-agent doctor [--dir DIR]
        edge-agent prepare --owner UID:GID PATH[:MODE]...
+       edge-agent version
 
 pull reads NODE_TOKEN, and serve reads EDGE_SIGNING_KEY.
 `
@@ -55,6 +57,8 @@ func main() {
 		err = runDoctor(ctx, os.Args[2:])
 	case "prepare":
 		err = prepare.Command(os.Args[2:])
+	case "version":
+		fmt.Println(buildinfo.Line("edge-agent"))
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -88,6 +92,7 @@ func runDoctor(ctx context.Context, args []string) error {
 		client, err := control.NewClient(os.Getenv("ORCHESTRATOR_URL"), token)
 		r.Check("orchestrator URL", err)
 		if err == nil {
+			client.Role = "edge-agent"
 			checkNode(ctx, r, client)
 		}
 	}
@@ -150,6 +155,8 @@ func pull(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	client.Role = "edge-agent"
+	log.Print(buildinfo.Line("edge-agent"))
 	agent := &edgeagent.Agent{Client: client, Dir: *dir, Poll: *poll, Limit: *limitMB * 1e6}
 	return agent.Run(ctx)
 }
@@ -174,7 +181,7 @@ func serve(ctx context.Context, args []string) error {
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- server.ListenAndServe() }()
-	log.Printf("serving %s on %s", *dir, *addr)
+	log.Printf("%s: serving %s on %s", buildinfo.Line("edge-agent"), *dir, *addr)
 	select {
 	case err := <-errc:
 		return err

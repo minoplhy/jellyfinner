@@ -55,6 +55,7 @@ type Server struct {
 	mu       sync.Mutex
 	failures map[netip.Addr]*failure
 	seen     map[string]time.Time
+	reports  map[string]*control.NodeReport
 }
 
 type failure struct {
@@ -66,7 +67,7 @@ type failure struct {
 // writes through, so a revoked node loses access at once.
 func New(cfg *config.Config, store database.Store, reg *nodes.Registry, hooks Hooks, logger *log.Logger) *Server {
 	return &Server{cfg: cfg, store: store, nodes: reg, hooks: hooks, log: logger, Now: time.Now,
-		failures: map[netip.Addr]*failure{}, seen: map[string]time.Time{}}
+		failures: map[netip.Addr]*failure{}, seen: map[string]time.Time{}, reports: map[string]*control.NodeReport{}}
 }
 
 // Handler returns the routes behind authentication.
@@ -110,7 +111,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		s.markSeen(node.ID)
+		s.markSeen(node.ID, r.UserAgent())
 		// Uploads carry a whole file and set their own limit.
 		if r.Method != http.MethodPut {
 			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
@@ -131,10 +132,59 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, control.WhoAmIResponse{Name: n.Name, Kind: n.Kind})
 }
 
-func (s *Server) markSeen(node string) {
+func (s *Server) markSeen(node, userAgent string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seen[node] = s.Now()
+	rep := s.report(node)
+	rep.UserAgent = userAgent
+	rep.Version, rep.Platform = control.ParseUserAgent(userAgent)
+}
+
+// report returns a node's report, creating it. The caller holds mu.
+func (s *Server) report(node string) *control.NodeReport {
+	rep := s.reports[node]
+	if rep == nil {
+		rep = &control.NodeReport{}
+		s.reports[node] = rep
+	}
+	return rep
+}
+
+// NodeReports returns, by node ID, what each node last reported about itself.
+func (s *Server) NodeReports() map[string]control.NodeReport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]control.NodeReport, len(s.reports))
+	for node, rep := range s.reports {
+		out[node] = *rep
+	}
+	return out
+}
+
+// workerReport records a worker's info and, for a job, its live stage and
+// encoder. An empty job clears the live part.
+func (s *Server) workerReport(node string, info *control.WorkerInfo, job string, hb *control.HeartbeatRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rep := s.report(node)
+	if info != nil {
+		rep.Worker = info
+	}
+	if hb == nil {
+		rep.Job, rep.Stage, rep.Backend, rep.EncodeSince = job, "", "", time.Time{}
+		return
+	}
+	if rep.Job != job {
+		rep.Job, rep.Stage, rep.Backend, rep.EncodeSince = job, "", "", time.Time{}
+	}
+	if hb.Stage == "encode" && rep.Stage != "encode" {
+		rep.EncodeSince = s.Now()
+	}
+	rep.Stage = hb.Stage
+	if hb.Backend != "" {
+		rep.Backend = hb.Backend
+	}
 }
 
 // LastSeen returns when each node, by ID, last made an authenticated call.
@@ -187,15 +237,24 @@ func (s *Server) recordFailure(addr netip.Addr) {
 
 func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 	node, _ := r.Context().Value(nodeIDKey).(string)
+	// Older workers send no body.
+	var req control.ClaimRequest
+	if r.ContentLength != 0 {
+		if !readJSON(w, r, &req) {
+			return
+		}
+	}
 	j, err := s.store.Claim(node, s.cfg.LeaseFor)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
 	if j == nil {
+		s.workerReport(node, req.Info, "", nil)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	s.workerReport(node, req.Info, j.ID, nil)
 	writeJSON(w, control.ClaimResponse{Job: *s.hooks.WorkerJob(j), Lease: j.LeaseID})
 }
 
@@ -209,6 +268,7 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
+	s.workerReport(nodeID(r), req.Info, r.PathValue("id"), &req)
 	writeJSON(w, control.HeartbeatResponse{Cancel: cancel})
 }
 
@@ -218,6 +278,7 @@ func (s *Server) finish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	s.workerReport(nodeID(r), nil, "", nil)
 	if req.Released {
 		if err := s.store.Release(id, req.Lease); err != nil {
 			s.fail(w, err)

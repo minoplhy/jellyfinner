@@ -41,6 +41,24 @@ type Config struct {
 	Profile  encode.Profile
 	Backend  encode.Backend
 	Transfer transfer.Transfer
+	// OnBackend, when set, hears which encoder each attempt starts with:
+	// the configured one, software after a fall back, or BackendCopy.
+	OnBackend func(encode.Backend)
+}
+
+// BackendCopy is what OnBackend hears for a stream copy, which encodes nothing.
+const BackendCopy encode.Backend = "copy"
+
+// Timing records when the encode ran on the worker's clock, and how long each
+// stage took. A retry that reuses an earlier verified encode keeps that
+// encode's times and sets Reused.
+type Timing struct {
+	EncodeStarted  time.Time `json:"encode_started,omitzero"`
+	EncodeFinished time.Time `json:"encode_finished,omitzero"`
+	EncodeSeconds  float64   `json:"encode_seconds,omitempty"`
+	PullSeconds    float64   `json:"pull_seconds,omitempty"`
+	PushSeconds    float64   `json:"push_seconds,omitempty"`
+	Reused         bool      `json:"reused,omitempty"`
 }
 
 // File is one pushed file, with the checksum B verifies before publishing.
@@ -58,6 +76,7 @@ type Manifest struct {
 	VideoCopy  bool           `json:"video_copy"`
 	Skipped    []string       `json:"skipped,omitempty"`
 	Files      []File         `json:"files"`
+	Timing     *Timing        `json:"timing,omitempty"`
 }
 
 // Progress receives the current stage, and completion from 0 to 1 when known.
@@ -104,6 +123,7 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 		return nil, err
 	}
 	logRate(log, "pull", size, started)
+	pullSeconds := time.Since(started).Seconds()
 
 	// The job decides the output, and the node only decides its hardware.
 	profile := cfg.Profile
@@ -118,12 +138,17 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 	done := loadEncoded(outDir, key)
 	if done != nil {
 		fmt.Fprintln(log, "reusing the encode from an earlier attempt")
+		done.Reused = true
 	} else {
+		encodeStarted := time.Now()
 		done, err = encodeAll(ctx, cfg, j, profile, src, outDir, base, log, progress)
 		if err != nil {
 			return nil, err
 		}
+		encodeFinished := time.Now()
 		done.Key = key
+		done.EncodeStarted, done.EncodeFinished = encodeStarted.UTC(), encodeFinished.UTC()
+		done.EncodeSeconds = encodeFinished.Sub(encodeStarted).Seconds()
 		if err := saveEncoded(outDir, done); err != nil {
 			return nil, err
 		}
@@ -136,6 +161,13 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 		Backend:    done.Backend,
 		VideoCopy:  done.VideoCopy,
 		Skipped:    done.Skipped,
+		Timing: &Timing{
+			EncodeStarted:  done.EncodeStarted,
+			EncodeFinished: done.EncodeFinished,
+			EncodeSeconds:  done.EncodeSeconds,
+			PullSeconds:    pullSeconds,
+			Reused:         done.Reused,
+		},
 	}
 	started = time.Now()
 	if err := push(ctx, cfg, j, outDir, done.Names, manifest); err != nil {
@@ -146,6 +178,7 @@ func Run(ctx context.Context, cfg Config, j *job.Job, log io.Writer, progress Pr
 		pushed += f.Size
 	}
 	logRate(log, "push", pushed, started)
+	manifest.Timing.PushSeconds = time.Since(started).Seconds()
 	progress("done", 1)
 	succeeded = true
 	return manifest, nil
@@ -194,6 +227,11 @@ type encoded struct {
 	Backend   encode.Backend `json:"backend,omitempty"`
 	VideoCopy bool           `json:"video_copy"`
 	Skipped   []string       `json:"skipped,omitempty"`
+	// When the encode ran, so a retry that reuses it reports the real times.
+	EncodeStarted  time.Time `json:"encode_started,omitzero"`
+	EncodeFinished time.Time `json:"encode_finished,omitzero"`
+	EncodeSeconds  float64   `json:"encode_seconds,omitempty"`
+	Reused         bool      `json:"-"`
 }
 
 // reuseKey covers everything that changes the output for the same job ID, which
@@ -254,6 +292,13 @@ func encodeVideo(ctx context.Context, cfg Config, j *job.Job, profile encode.Pro
 		return encode.Verify(ctx, cfg.FFmpeg, cfg.FFprobe, out, plan, log)
 	}
 	attempt := func(backend encode.Backend) error {
+		if cfg.OnBackend != nil {
+			if plan.Video.Copy {
+				cfg.OnBackend(BackendCopy)
+			} else {
+				cfg.OnBackend(backend)
+			}
+		}
 		args := encode.EncodeArgs(src, out, plan, profile, backend)
 		if err := encode.Run(ctx, cfg.FFmpeg, args, plan.Duration, log, report); err != nil {
 			return err

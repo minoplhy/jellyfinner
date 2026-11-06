@@ -22,7 +22,9 @@ var _ control.API = Unimplemented{}
 func (Unimplemented) WhoAmI(context.Context) (*control.WhoAmIResponse, error) {
 	return nil, ErrNotFaked
 }
-func (Unimplemented) Claim(context.Context) (*control.ClaimResponse, error) { return nil, ErrNotFaked }
+func (Unimplemented) Claim(context.Context, *control.WorkerInfo) (*control.ClaimResponse, error) {
+	return nil, ErrNotFaked
+}
 func (Unimplemented) Heartbeat(context.Context, string, control.HeartbeatRequest) (bool, error) {
 	return false, ErrNotFaked
 }

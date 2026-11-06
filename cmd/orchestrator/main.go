@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"jellyfinner/internal/api"
+	"jellyfinner/internal/buildinfo"
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/database"
 	"jellyfinner/internal/jellyfin"
@@ -37,6 +38,7 @@ const usage = `usage: orchestrator [--env FILE] COMMAND
   health serve                 exits non-zero if serve is not listening
   doctor                       checks settings, folders, database and Jellyfin
   prepare --owner UID:GID PATH[:MODE]...  creates data folders, run once as root
+  version                      prints the build
   node add NAME [--allow CIDR,...]
   node add NAME --edge --url URL --quota-gb N [--allow CIDR,...]
   node add NAME --router [--allow CIDR,...]   in front of Jellyfin, see compose.router.yml
@@ -95,6 +97,8 @@ func main() {
 		err = runDoctor(*envFile)
 	case "prepare":
 		err = prepare.Command(args[1:])
+	case "version":
+		fmt.Println(buildinfo.Line("orchestrator"))
 	case "cloud":
 		err = cloudCommand(*envFile, args[1:])
 	case "node":
@@ -167,6 +171,7 @@ func serve(envFile string) error {
 		return err
 	}
 	defer release()
+	log.Print(buildinfo.Line("orchestrator"))
 	if cfg.EdgeTokenKey, err = nodes.EnsureSecret(store, "edge_token_key"); err != nil {
 		return err
 	}
@@ -253,6 +258,7 @@ func serve(envFile string) error {
 	var extra []*http.Server
 	if cfg.AdminAddr != "" {
 		admin := web.New(svc, jellyfin.New(cfg.JellyfinURL, cfg.JellyfinToken), control.LastSeen, logger)
+		admin.NodeReports = control.NodeReports
 		if cfg.AdminTLSCert == "" {
 			if err := config.CheckListenAddr(cfg.AdminAddr); err != nil {
 				return fmt.Errorf("ADMIN_ADDR without ADMIN_TLS_CERT: %w", err)

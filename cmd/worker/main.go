@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"jellyfinner/internal/buildinfo"
 	"jellyfinner/internal/control"
 	"jellyfinner/internal/encode"
 	"jellyfinner/internal/pipeline"
@@ -24,7 +25,7 @@ import (
 )
 
 const (
-	usage          = "usage: worker serve --url URL --scratch DIR [--transfer https|rclone] [--backend software|vaapi|rkmpp] [--device PATH]\n       worker doctor\n       worker health\n       worker prepare --owner UID:GID PATH[:MODE]...\n\nThe control token is read from NODE_TOKEN. Settings can also come from ORCHESTRATOR_URL, SCRATCH_DIR, TRANSFER, ENCODER, VAAPI_DEVICE, FFMPEG and FFPROBE.\n"
+	usage          = "usage: worker serve --url URL --scratch DIR [--transfer https|rclone] [--backend software|vaapi|rkmpp] [--device PATH]\n       worker doctor\n       worker version\n       worker health\n       worker prepare --owner UID:GID PATH[:MODE]...\n\nThe control token is read from NODE_TOKEN. Settings can also come from ORCHESTRATOR_URL, SCRATCH_DIR, TRANSFER, ENCODER, VAAPI_DEVICE, FFMPEG and FFPROBE.\n"
 	logTailBytes   = 256 << 10
 	finishAttempts = 5
 	healthMaxAge   = 3 * time.Minute
@@ -41,9 +42,14 @@ type worker struct {
 	method    string
 	rclone    string
 	streams   int
+	info      *control.WorkerInfo
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "version" {
+		fmt.Println(buildinfo.Line("worker"))
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "health" {
 		if err := control.CheckAlive(healthMaxAge); err != nil {
 			fmt.Fprintln(os.Stderr, "worker:", err)
@@ -129,11 +135,14 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	client.Role = "worker"
 
 	profile := encode.DefaultProfile()
 	if *device != "" {
 		profile.Device = *device
 	}
+	info := gatherInfo(ctx, encode.Backend(*backend), profile.Device, *ffmpeg)
+	log.Printf("%s; %s, %d cores, %d threads, encoder %s; %s", buildinfo.Line("worker"), info.CPU, info.Cores, info.Threads, info.Backend, info.FFmpeg)
 	w := &worker{
 		client:    client,
 		poll:      *poll,
@@ -141,6 +150,7 @@ func serve(ctx context.Context, args []string) error {
 		method:    *method,
 		rclone:    *rclone,
 		streams:   *streams,
+		info:      info,
 		cfg: pipeline.Config{
 			Scratch: *scratch,
 			FFmpeg:  *ffmpeg,
@@ -154,7 +164,7 @@ func serve(ctx context.Context, args []string) error {
 
 func (w *worker) loop(ctx context.Context) error {
 	for {
-		claim, err := w.client.Claim(ctx)
+		claim, err := w.client.Claim(ctx, w.info)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -212,6 +222,7 @@ func (w *worker) runJob(ctx context.Context, claim *control.ClaimResponse) {
 	}
 
 	status := &progress{}
+	cfg.OnBackend = func(b encode.Backend) { status.setBackend(string(b)) }
 	var beat sync.WaitGroup
 	stopBeat := make(chan struct{})
 	beat.Add(1)
@@ -268,8 +279,9 @@ func (w *worker) keepAlive(ctx context.Context, id, lease string, status *progre
 			return
 		case <-ticker.C:
 		}
-		stage, fraction := status.get()
-		stopJob, err := w.client.Heartbeat(ctx, id, control.HeartbeatRequest{Lease: lease, Stage: stage, Fraction: fraction})
+		stage, fraction, backend := status.get()
+		stopJob, err := w.client.Heartbeat(ctx, id, control.HeartbeatRequest{
+			Lease: lease, Stage: stage, Fraction: fraction, Backend: backend, Info: w.info})
 		switch {
 		case errors.Is(err, control.ErrLeaseLost):
 			cancel(control.ErrLeaseLost)
@@ -333,6 +345,13 @@ type progress struct {
 	mu       sync.Mutex
 	stage    string
 	fraction float64
+	backend  string
+}
+
+func (p *progress) setBackend(backend string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.backend = backend
 }
 
 func (p *progress) set(stage string, fraction float64) {
@@ -341,10 +360,10 @@ func (p *progress) set(stage string, fraction float64) {
 	p.stage, p.fraction = stage, fraction
 }
 
-func (p *progress) get() (string, float64) {
+func (p *progress) get() (string, float64, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.stage, p.fraction
+	return p.stage, p.fraction, p.backend
 }
 
 // tailWriter keeps the end of the log, where the failure is.

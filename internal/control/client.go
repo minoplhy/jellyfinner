@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"jellyfinner/internal/buildinfo"
 	"jellyfinner/internal/config"
 	"jellyfinner/internal/job"
 )
@@ -28,11 +29,65 @@ type ClaimResponse struct {
 	Lease string  `json:"lease"`
 }
 
-// HeartbeatRequest extends a lease.
+// ClaimRequest asks for work, and tells the orchestrator what this worker is.
+// An empty body is still accepted, so older workers keep working.
+type ClaimRequest struct {
+	Info *WorkerInfo `json:"info,omitempty"`
+}
+
+// WorkerInfo describes a worker's build and hardware. It is gathered once at
+// start and sent with claims and heartbeats, so an orchestrator that restarts
+// learns it again within one call, even while a long encode runs.
+type WorkerInfo struct {
+	CPU      string  `json:"cpu,omitempty"`       // CPU model, or the board on Arm
+	Cores    int     `json:"cores,omitempty"`     // physical cores, 0 when unknown
+	Threads  int     `json:"threads,omitempty"`   // logical CPUs this process may use
+	CPULimit float64 `json:"cpu_limit,omitempty"` // container CPU quota in CPUs, 0 for none
+	Backend  string  `json:"backend,omitempty"`   // configured encoder: software, vaapi or rkmpp
+	Device   string  `json:"device,omitempty"`    // VAAPI render node, when used
+	FFmpeg   string  `json:"ffmpeg,omitempty"`    // ffmpeg's version line
+	Kernel   string  `json:"kernel,omitempty"`
+	OS       string  `json:"os,omitempty"` // GOOS/GOARCH
+}
+
+// HeartbeatRequest extends a lease. Backend is the encoder running right now,
+// which differs from the configured one after a fall back to software, and is
+// "copy" for a stream copy.
 type HeartbeatRequest struct {
-	Lease    string  `json:"lease"`
-	Stage    string  `json:"stage"`
-	Fraction float64 `json:"fraction"`
+	Lease    string      `json:"lease"`
+	Stage    string      `json:"stage"`
+	Fraction float64     `json:"fraction"`
+	Backend  string      `json:"backend,omitempty"`
+	Info     *WorkerInfo `json:"info,omitempty"`
+}
+
+// NodeReport is what the orchestrator last heard from a node. It lives in
+// memory only, so it is empty after a restart until the node calls again.
+type NodeReport struct {
+	UserAgent string
+	Version   string      // from the User-Agent, "" for an older node
+	Platform  string      // from the User-Agent, such as "linux/arm64; go1.27.3"
+	Worker    *WorkerInfo // nil until a worker reports it
+	// The job a worker is running, from its heartbeats.
+	Job         string
+	Stage       string
+	Backend     string    // encoder in use now: software, vaapi, rkmpp or copy
+	EncodeSince time.Time // when Stage last became encode
+}
+
+// ParseUserAgent splits "jellyfinner-role/version (platform)" into the
+// version and platform. Anything else, such as an older node's Go default,
+// gives empty strings.
+func ParseUserAgent(ua string) (version, platform string) {
+	product, rest, _ := strings.Cut(ua, " ")
+	name, version, ok := strings.Cut(product, "/")
+	if !ok || !strings.HasPrefix(name, "jellyfinner-") {
+		return "", ""
+	}
+	if strings.HasPrefix(rest, "(") && strings.HasSuffix(rest, ")") {
+		platform = rest[1 : len(rest)-1]
+	}
+	return version, platform
 }
 
 // HeartbeatResponse tells a worker whether to stop.
@@ -91,6 +146,9 @@ const (
 
 // Client is a node's connection to the control API.
 type Client struct {
+	// Role names the program in the User-Agent, which is how the orchestrator
+	// learns each node's version.
+	Role     string
 	url      string
 	token    string
 	http     *http.Client
@@ -107,6 +165,7 @@ func NewClient(baseURL, token string) (*Client, error) {
 		return nil, errors.New("control token is required")
 	}
 	return &Client{
+		Role:     "node",
 		url:      strings.TrimSuffix(baseURL, "/"),
 		token:    token,
 		http:     &http.Client{Timeout: 30 * time.Second},
@@ -133,12 +192,22 @@ func transferTransport() *http.Transport {
 	return t
 }
 
-func (c *Client) transferRequest(ctx context.Context, method, path, lease string, body io.Reader) (*http.Request, error) {
+// newRequest adds the token and User-Agent every call carries.
+func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.url+path, body)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("User-Agent", buildinfo.UserAgent(c.Role))
+	return req, nil
+}
+
+func (c *Client) transferRequest(ctx context.Context, method, path, lease string, body io.Reader) (*http.Request, error) {
+	req, err := c.newRequest(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set(LeaseHeader, lease)
 	return req, nil
 }
@@ -246,11 +315,10 @@ func (c *Client) post(ctx context.Context, path string, body, out any) (int, err
 		}
 		payload = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url+path, payload)
+	req, err := c.newRequest(ctx, http.MethodPost, path, payload)
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -276,11 +344,10 @@ type WhoAmIResponse struct {
 
 // WhoAmI tests the connection and token, and changes nothing.
 func (c *Client) WhoAmI(ctx context.Context) (*WhoAmIResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/v1/whoami", nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/v1/whoami", nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -315,10 +382,15 @@ func (c *Client) Resolve(ctx context.Context, username, output string) (string, 
 	return resp.URL, nil
 }
 
-// Claim asks for work. It returns nil when the queue is empty.
-func (c *Client) Claim(ctx context.Context) (*ClaimResponse, error) {
+// Claim asks for work, reporting info when not nil. It returns nil when the
+// queue is empty.
+func (c *Client) Claim(ctx context.Context, info *WorkerInfo) (*ClaimResponse, error) {
 	var resp ClaimResponse
-	status, err := c.post(ctx, "/v1/jobs/claim", nil, &resp)
+	var body any
+	if info != nil {
+		body = ClaimRequest{Info: info}
+	}
+	status, err := c.post(ctx, "/v1/jobs/claim", body, &resp)
 	if err != nil {
 		return nil, err
 	}
@@ -395,11 +467,10 @@ func (c *Client) EdgeAck(ctx context.Context, req EdgeAck) error {
 // the configured address, never from an order. It has no overall timeout,
 // because a capped pull can legitimately take hours.
 func (c *Client) EdgeDownload(ctx context.Context, hash, token string, offset int64) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url+"/v1/edge/files/"+hash, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/v1/edge/files/"+hash, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("X-Download-Token", token)
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
@@ -412,8 +483,9 @@ func (c *Client) EdgeDownload(ctx context.Context, hash, token string, offset in
 type API interface {
 	// WhoAmI returns the node this token belongs to.
 	WhoAmI(ctx context.Context) (*WhoAmIResponse, error)
-	// Claim asks for a job, and returns nil when there is none.
-	Claim(ctx context.Context) (*ClaimResponse, error)
+	// Claim asks for a job, reporting info when not nil, and returns nil
+	// when there is none.
+	Claim(ctx context.Context, info *WorkerInfo) (*ClaimResponse, error)
 	// Heartbeat extends a lease, and reports true when the job was cancelled.
 	Heartbeat(ctx context.Context, id string, req HeartbeatRequest) (bool, error)
 	// Finish reports a job's result.

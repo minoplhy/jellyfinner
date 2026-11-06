@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -8,8 +9,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"jellyfinner/internal/model"
+	"jellyfinner/internal/pipeline"
 )
 
 // queueStates are the states the queue can be filtered by, in tab order.
@@ -153,6 +156,43 @@ type jobData struct {
 	CSRF string
 	Job  *model.Job
 	Live bool // the job may still change, so the page polls
+	Run  jobRun
+}
+
+// jobRun is when the last attempt ran and what encoded it. Times are zero
+// when unknown: jobs from before timing existed, or from older workers.
+type jobRun struct {
+	Started  time.Time     // the claim, on the orchestrator's clock
+	Finished time.Time     // the hand-back, zero while running
+	Total    time.Duration // Finished - Started, or time so far while running
+	Running  bool
+	Backend  string
+	Copy     bool
+	Timing   *pipeline.Timing // from the worker's manifest
+}
+
+func newJobRun(j *model.Job, now time.Time) jobRun {
+	var run jobRun
+	if j.Started > 0 {
+		run.Started = time.Unix(j.Started, 0)
+	}
+	if j.Finished > 0 && j.Finished >= j.Started {
+		run.Finished = time.Unix(j.Finished, 0)
+	}
+	switch {
+	case !run.Started.IsZero() && !run.Finished.IsZero():
+		run.Total = run.Finished.Sub(run.Started)
+	case !run.Started.IsZero() && active(j):
+		run.Running = true
+		run.Total = now.Sub(run.Started)
+	}
+	if j.Manifest != "" {
+		var m pipeline.Manifest
+		if err := json.Unmarshal([]byte(j.Manifest), &m); err == nil {
+			run.Backend, run.Copy, run.Timing = string(m.Backend), m.VideoCopy, m.Timing
+		}
+	}
+	return run
 }
 
 func (s *Server) loadJob(w http.ResponseWriter, r *http.Request, csrf string) (jobData, bool) {
@@ -166,7 +206,7 @@ func (s *Server) loadJob(w http.ResponseWriter, r *http.Request, csrf string) (j
 		return jobData{}, false
 	}
 	live := j.State == model.StateQueued || j.State == model.StateRunning || j.State == model.StatePublishing
-	return jobData{CSRF: csrf, Job: j, Live: live}, true
+	return jobData{CSRF: csrf, Job: j, Live: live, Run: newJobRun(j, s.now())}, true
 }
 
 func (s *Server) jobPage(w http.ResponseWriter, r *http.Request, sess *session) {

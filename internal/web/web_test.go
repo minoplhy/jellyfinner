@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"jellyfinner/internal/config"
+	"jellyfinner/internal/control"
 	"jellyfinner/internal/database"
 	"jellyfinner/internal/database/dbtest"
 	"jellyfinner/internal/jellyfin"
@@ -59,6 +60,8 @@ type fixture struct {
 	auth   *fakeAuth
 	server *httptest.Server
 	now    time.Time
+	// reports is what the nodes reported, as the control API would give it.
+	reports map[string]control.NodeReport
 }
 
 func newFixture(t *testing.T) *fixture { return newFixtureAt(t, "") }
@@ -93,7 +96,9 @@ func newFixtureAt(t *testing.T, base string) *fixture {
 		t.Fatal(err)
 	}
 	seen := func() map[string]time.Time { return map[string]time.Time{"worker1": f.now} }
-	f.server = httptest.NewServer(New(f.svc, f.auth, seen, logger).Handler())
+	admin := New(f.svc, f.auth, seen, logger)
+	admin.NodeReports = func() map[string]control.NodeReport { return f.reports }
+	f.server = httptest.NewServer(admin.Handler())
 	t.Cleanup(f.server.Close)
 	return f
 }

@@ -122,7 +122,7 @@
     <tbody>
     {{range .Routers}}
     <tr id="node-{{.ID}}">
-      <td class="nowrap"><b>{{.Name}}</b></td>
+      <td><b class="nowrap">{{.Name}}</b><span class="nodeinfo muted small">{{template "build" .Build}}</span></td>
       <td>{{template "nodebadge" .State}}</td>
       <td class="muted nowrap">{{if .Seen.IsZero}}—{{else}}{{agoT .Seen}}{{end}}</td>
       <td class="small">{{or .Allow "any"}}</td>
@@ -177,6 +177,19 @@
 {{end}}
 {{end}}
 
+{{/* workerinfo is a worker's build and hardware, as it last reported them. */}}
+{{/* build is a program's version, with its platform. */}}
+{{define "build"}}{{if .Version}}{{.Version}}{{with .Platform}} <span class="muted">({{.}})</span>{{end}}{{else}}<span class="muted" title="Not reported yet, or an older build">version unknown</span>{{end}}{{end}}
+
+{{define "workerinfo"}}{{if or .Version .Worker}}<span class="nodeinfo muted small">
+{{- with .Version}}{{.}}{{end}}
+{{- with .Platform}} ({{.}}){{end}}
+{{- with .Worker}}{{if $.Version}} · {{end}}{{.CPU}}
+{{- if .Cores}} · {{.Cores}}C/{{.Threads}}T{{else if .Threads}} · {{.Threads}} threads{{end}}
+{{- if .CPULimit}} (limit {{.CPULimit}} CPUs){{end}}
+{{- with .Backend}} · {{if eq . "software"}}software{{else}}hardware: {{.}}{{end}}{{end}}
+{{- with .FFmpeg}}<br><span title="{{$.UserAgent}}">{{.}}</span>{{end}}{{end}}</span>{{end}}{{end}}
+
 {{define "workers"}}
 {{$csrf := .CSRF}}
 <div id="workers" class="panel flush" data-poll hx-get="{{base}}/fragments/nodes/workers" hx-trigger="every 3s" hx-swap="outerHTML">
@@ -185,11 +198,16 @@
     <thead><tr><th>Node</th><th>State</th><th>Last seen</th><th>Working on</th><th class="num">Failed, 24 h</th><th></th></tr></thead>
     <tbody>
     {{range .Workers}}
+    {{$w := .}}
     <tr id="node-{{.ID}}">
-      <td class="nowrap"><b>{{.Name}}</b></td>
+      <td><b class="nowrap">{{.Name}}</b>{{template "workerinfo" .Report}}</td>
       <td>{{template "nodebadge" .State}}</td>
       <td class="muted nowrap">{{if .Seen.IsZero}}—{{else}}{{agoT .Seen}}{{end}}</td>
-      <td>{{range .Active}}<div class="path small"><a href="{{base}}/jobs/{{.ID}}">{{template "path" .Path}}</a></div>{{if eq .State "running"}}{{template "progress" .}}{{else}}{{template "badge" .State}}{{end}}{{else}}<span class="muted">idle</span>{{end}}</td>
+      <td>{{range .Active}}<div class="path small"><a href="{{base}}/jobs/{{.ID}}">{{template "path" .Path}}</a></div>{{if eq .State "running"}}{{template "progress" .}}{{else}}{{template "badge" .State}}{{end}}
+        <div class="small muted">{{if .Started}}started {{clock (unixT .Started)}}, {{agoT (unixT .Started)}}{{end}}
+        {{$since := $w.EncodeSince .ID}}{{if not $since.IsZero}} · encoding since {{clock $since}}, {{agoT $since}}{{end}}
+        {{if $w.FellBack .ID}}<span class="badge b-fallback" title="Hardware encoding failed for this file, so it fell back to software">software (fallback)</span>{{else}}{{template "encoder" ($w.LiveEncoder .ID)}}{{end}}</div>
+        {{else}}<span class="muted">idle</span>{{end}}</td>
       <td class="num">{{if .Failed}}<a class="error" href="{{base}}/queue?state=failed&node={{.ID}}">{{.Failed}}</a>{{else}}<span class="muted">0</span>{{end}}</td>
       <td class="actions">{{template "nodepause" (nodeAdmin .ID .Name .Paused $csrf)}}{{template "nodeadmin" (nodeAdmin .ID .Name false $csrf)}}</td>
     </tr>
@@ -215,6 +233,10 @@
   <div class="meta">
     <span><a href="{{.URL}}" rel="noreferrer">{{.URL}}</a></span>
     <span>Viewers: <b>{{range $i, $v := .Viewers}}{{if $i}}, {{end}}{{$v}}{{else}}none{{end}}</b> <a class="small" href="{{base}}/nodes/{{.ID}}/edit#viewers">Manage</a></span>
+  </div>
+  <div class="meta small">
+    <span>Pull agent: {{template "build" .Agent}}</span>
+    <span title="From the orchestrator's signed health probe. Unknown when the files are served by nginx alone.">File server: {{template "build" .Server}}</span>
   </div>
   <div class="meta">
     <div class="gauge">

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"jellyfinner/internal/encode"
 	"jellyfinner/internal/job"
@@ -86,6 +87,7 @@ func TestRunEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	checkTiming(t, manifest.Timing, false)
 
 	if len(manifest.Files) != 2 {
 		t.Fatalf("files = %+v, want the mp4 and one sidecar", manifest.Files)
@@ -197,6 +199,9 @@ func TestRunFallsBackToSoftware(t *testing.T) {
 			cfg.Profile.Device = "/nonexistent/renderD128"
 			j := testJob(t, source)
 
+			var tried []encode.Backend
+			cfg.OnBackend = func(b encode.Backend) { tried = append(tried, b) }
+
 			log := &bytes.Buffer{}
 			manifest, err := Run(context.Background(), cfg, j, log, nil)
 			if err != nil {
@@ -204,6 +209,9 @@ func TestRunFallsBackToSoftware(t *testing.T) {
 			}
 			if manifest.Backend != encode.BackendSoftware {
 				t.Errorf("backend = %q, want software fallback", manifest.Backend)
+			}
+			if len(tried) != 2 || tried[0] != backend || tried[1] != encode.BackendSoftware {
+				t.Errorf("OnBackend heard %v, want [%s software]", tried, backend)
 			}
 		})
 	}
@@ -397,6 +405,12 @@ func TestRetryReusesEncode(t *testing.T) {
 	if _, err := Run(context.Background(), cfg, j, &bytes.Buffer{}, nil); err == nil {
 		t.Fatal("want the push to fail")
 	}
+	var first encoded
+	if data, err := os.ReadFile(filepath.Join(cfg.Scratch, j.ID, "out", encodedName)); err != nil {
+		t.Fatal(err)
+	} else if err := json.Unmarshal(data, &first); err != nil {
+		t.Fatal(err)
+	}
 
 	// No working ffmpeg or ffprobe, so only a reused encode can succeed.
 	flaky.fail = false
@@ -411,6 +425,27 @@ func TestRetryReusesEncode(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(j.Incoming, j.ID, ManifestName)); err != nil {
 		t.Errorf("manifest not pushed: %v", err)
+	}
+	checkTiming(t, manifest.Timing, true)
+	if tm := manifest.Timing; tm != nil && (!tm.EncodeStarted.Equal(first.EncodeStarted) || !tm.EncodeFinished.Equal(first.EncodeFinished)) {
+		t.Errorf("reused encode times %v-%v, want the first attempt's %v-%v",
+			tm.EncodeStarted, tm.EncodeFinished, first.EncodeStarted, first.EncodeFinished)
+	}
+}
+
+func checkTiming(t *testing.T, tm *Timing, reused bool) {
+	t.Helper()
+	if tm == nil {
+		t.Fatal("manifest has no timing")
+	}
+	if tm.EncodeStarted.IsZero() || tm.EncodeFinished.Before(tm.EncodeStarted) || tm.EncodeSeconds <= 0 {
+		t.Errorf("encode timing = %+v", tm)
+	}
+	if tm.Reused != reused {
+		t.Errorf("reused = %v, want %v", tm.Reused, reused)
+	}
+	if tm.EncodeStarted.Location() != time.UTC {
+		t.Errorf("encode times should be UTC, got %v", tm.EncodeStarted.Location())
 	}
 }
 

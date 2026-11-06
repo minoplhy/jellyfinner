@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"jellyfinner/internal/buildinfo"
 	"jellyfinner/internal/edge"
 )
 
@@ -23,7 +24,12 @@ type FileServer struct {
 // may strip it or not. The prefix grants nothing: the signature covers the
 // canonical /e/<hash>.mp4, and the file is chosen by a checked hash alone.
 func (s *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/health" || strings.HasSuffix(r.URL.Path, "/health") {
+	if r.URL.Path == edge.HealthPath || strings.HasSuffix(r.URL.Path, edge.HealthPath) {
+		// Only a probe signed with this node's key learns the build.
+		q := r.URL.Query()
+		if q.Get("md5") != "" && edge.CheckSignedURL(s.Key, edge.HealthPath, q.Get("md5"), q.Get("expires"), s.now()) == nil {
+			w.Header().Set(edge.BuildHeader, buildinfo.UserAgent("edge-serve"))
+		}
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok\n"))
 		return
@@ -42,12 +48,8 @@ func (s *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	now := time.Now
-	if s.Now != nil {
-		now = s.Now
-	}
 	query := r.URL.Query()
-	err := edge.CheckSignedURL(s.Key, edge.FilePath(hash), query.Get("md5"), query.Get("expires"), now())
+	err := edge.CheckSignedURL(s.Key, edge.FilePath(hash), query.Get("md5"), query.Get("expires"), s.now())
 	if errors.Is(err, edge.ErrExpired) {
 		http.Error(w, "expired", http.StatusGone)
 		return
@@ -72,4 +74,11 @@ func (s *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Web players are on the Jellyfin origin.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	http.ServeContent(w, r, "", info.ModTime(), f)
+}
+
+func (s *FileServer) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }

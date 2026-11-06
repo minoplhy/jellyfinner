@@ -56,6 +56,9 @@ type Service struct {
 	refreshTimer *time.Timer
 	scanFailing  bool
 	deletePaused bool
+	// serveBuilds is what each edge node's file server said about its build
+	// when last probed, by node ID. Memory only, refreshed every probe.
+	serveBuilds map[string]string
 }
 
 // New returns a Service. The profile hash goes into every job ID, so changing

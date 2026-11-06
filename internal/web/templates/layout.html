@@ -34,6 +34,7 @@
 {{with .Flash}}<div class="flash flash-{{.Kind}}" role="status">{{.Text}}</div>{{end}}
 {{template "content" .}}
 </main>
+{{if .User}}<footer class="footer muted small">Jellyfinner {{version}}</footer>{{end}}
 <div id="toasts" class="toasts" aria-live="polite"></div>
 </body>
 </html>
@@ -43,6 +44,9 @@
 
 {{/* nodebadge shows a node's state, whose label may say more than its class. */}}
 {{define "nodebadge"}}<span class="badge b-{{.Class}}">{{.Label}}</span>{{end}}
+
+{{/* encoder names an encoder backend as hardware or software. */}}
+{{define "encoder"}}{{if eq . "software"}}<span class="badge b-software">software</span>{{else if eq . "copy"}}<span class="badge">stream copy</span>{{else if .}}<span class="badge b-hardware">hardware ({{.}})</span>{{end}}{{end}}
 
 {{/* path shows a library path with its folder muted. */}}
 {{define "path"}}{{$p := splitPath .}}<span class="dir">{{$p.Dir}}</span><span class="file">{{$p.File}}</span>{{end}}

@@ -43,7 +43,7 @@ func transferFixture(t *testing.T, nodes []testNode) (*fixture, *control.ClaimRe
 	}); err != nil {
 		t.Fatal(err)
 	}
-	claim, err := f.client.Claim(context.Background())
+	claim, err := f.client.Claim(context.Background(), nil)
 	if err != nil || claim == nil {
 		t.Fatalf("claim: %v %v", claim, err)
 	}

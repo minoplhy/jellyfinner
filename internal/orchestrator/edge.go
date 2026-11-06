@@ -144,11 +144,30 @@ func (s *Service) refreshPlacements(output string, video pipeline.File) error {
 func (s *Service) probeNodes(ctx context.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	for _, n := range s.Nodes.Edges() {
-		healthy := probe(ctx, client, strings.TrimSuffix(n.URL, "/")+"/health")
+		// Signed, so the file server also says which build it runs.
+		url := edge.SignHealthURL(n.URL, n.SigningKey, s.Now().Add(time.Minute))
+		healthy, build := probe(ctx, client, url)
 		if err := s.Store.SetNodeHealth(n.ID, healthy); err != nil {
 			s.Log.Printf("node health %s: %v", n.Name, err)
 		}
+		s.mu.Lock()
+		if s.serveBuilds == nil {
+			s.serveBuilds = map[string]string{}
+		}
+		if healthy {
+			s.serveBuilds[n.ID] = build
+		}
+		s.mu.Unlock()
 	}
+}
+
+// ServeBuild is the build an edge node's file server reported, as
+// "jellyfinner-edge-serve/version (platform)", or "" when unknown, such as
+// behind nginx alone or before the first probe.
+func (s *Service) ServeBuild(node string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serveBuilds[node]
 }
 
 // LegacyViewersNote is said wherever EDGE_VIEWERS is still set.
@@ -206,17 +225,17 @@ func AllowString(prefixes []netip.Prefix) string {
 	return strings.Join(out, ", ")
 }
 
-func probe(ctx context.Context, client *http.Client, url string) bool {
+func probe(ctx context.Context, client *http.Client, url string) (healthy bool, build string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false
+		return false, ""
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false
+		return false, ""
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	return resp.StatusCode == http.StatusOK, resp.Header.Get(edge.BuildHeader)
 }
 
 // EdgeCopyFailed tells the operator, because nothing retries on its own: a node

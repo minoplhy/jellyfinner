@@ -36,9 +36,26 @@ func FilePath(hash string) string { return "/e/" + hash + ".mp4" }
 func SignURL(baseURL, key, hash string, expires time.Time) string {
 	path := FilePath(hash)
 	unix := strconv.FormatInt(expires.Unix(), 10)
+	return fmt.Sprintf("%s%s?md5=%s&expires=%s", strings.TrimSuffix(baseURL, "/"), path, signature(key, path, unix), unix)
+}
+
+// HealthPath is a node's health check. Signed like a file URL, over this
+// canonical path, it also answers with the node's build in BuildHeader, so
+// only the orchestrator learns the version and anyone else just gets "ok".
+const (
+	HealthPath  = "/health"
+	BuildHeader = "X-Jellyfinner-Build"
+)
+
+// SignHealthURL is SignURL for the health check.
+func SignHealthURL(baseURL, key string, expires time.Time) string {
+	unix := strconv.FormatInt(expires.Unix(), 10)
+	return fmt.Sprintf("%s%s?md5=%s&expires=%s", strings.TrimSuffix(baseURL, "/"), HealthPath, signature(key, HealthPath, unix), unix)
+}
+
+func signature(key, path, unix string) string {
 	sum := md5.Sum([]byte(unix + path + " " + key))
-	sig := base64.RawURLEncoding.EncodeToString(sum[:])
-	return fmt.Sprintf("%s%s?md5=%s&expires=%s", strings.TrimSuffix(baseURL, "/"), path, sig, unix)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 // Errors from CheckSignedURL.
@@ -55,8 +72,7 @@ func CheckSignedURL(key, path, sig, expires string, now time.Time) error {
 	if err != nil {
 		return ErrBadSignature
 	}
-	sum := md5.Sum([]byte(expires + path + " " + key))
-	want := base64.RawURLEncoding.EncodeToString(sum[:])
+	want := signature(key, path, expires)
 	if !hmac.Equal([]byte(sig), []byte(want)) {
 		return ErrBadSignature
 	}

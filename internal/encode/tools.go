@@ -38,3 +38,15 @@ func TrialEncode(ctx context.Context, ffmpeg, encoder string) error {
 	}
 	return nil
 }
+
+// Version returns the first line of ffmpeg -version, such as
+// "ffmpeg version 7.1.1-Jellyfin Copyright ...", trimmed of the copyright.
+func Version(ctx context.Context, bin string) (string, error) {
+	out, err := exec.CommandContext(ctx, bin, "-hide_banner", "-version").Output()
+	if err != nil {
+		return "", err
+	}
+	line, _, _ := strings.Cut(string(out), "\n")
+	line, _, _ = strings.Cut(line, " Copyright")
+	return strings.TrimSpace(line), nil
+}

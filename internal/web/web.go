@@ -20,7 +20,9 @@ import (
 	"sync"
 	"time"
 
+	"jellyfinner/internal/buildinfo"
 	"jellyfinner/internal/config"
+	"jellyfinner/internal/control"
 	"jellyfinner/internal/jellyfin"
 	"jellyfinner/internal/orchestrator"
 )
@@ -63,9 +65,11 @@ type Server struct {
 	svc      *orchestrator.Service
 	auth     jellyfin.API // logins are checked against Jellyfin
 	lastSeen func() map[string]time.Time
-	log      *log.Logger
-	pages    map[string]*template.Template
-	base     string // the path of ADMIN_URL, such as /jellyfinner-admin
+	// NodeReports, when set, gives each node's last self-report, by node ID.
+	NodeReports func() map[string]control.NodeReport
+	log         *log.Logger
+	pages       map[string]*template.Template
+	base        string // the path of ADMIN_URL, such as /jellyfinner-admin
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -104,6 +108,10 @@ func New(svc *orchestrator.Service, auth jellyfin.API, lastSeen func() map[strin
 		"unixT":    func(unix int64) time.Time { return time.Unix(unix, 0) },
 		"clock":    func(t time.Time) string { return t.Local().Format("15:04") },
 		"date":     func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") },
+		"datetime": func(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05") },
+		"duration": humanDuration,
+		"seconds":  func(v float64) string { return humanDuration(time.Duration(v * float64(time.Second))) },
+		"version":  buildinfo.String,
 		"hours":    func(v float64) string { return fmt.Sprintf("%.1f", v) },
 		"gbph":     func(v float64) string { return fmt.Sprintf("%.2f", v) },
 		"addBytes": func(a, b int64) int64 { return a + b },
@@ -153,6 +161,27 @@ type nodeAdmin struct {
 
 // jobActions is what the jobactions partial needs.
 type jobActions struct{ ID, State, CSRF, From string }
+
+// nodeReports returns each node's self-report, or none when not wired.
+func (s *Server) nodeReports() map[string]control.NodeReport {
+	if s.NodeReports == nil {
+		return nil
+	}
+	return s.NodeReports()
+}
+
+// humanDuration is "1h 02m 05s", "4m 09s" or "12s".
+func humanDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h, m, sec := int(d/time.Hour), int(d%time.Hour/time.Minute), int(d%time.Minute/time.Second)
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh %02dm %02ds", h, m, sec)
+	case m > 0:
+		return fmt.Sprintf("%dm %02ds", m, sec)
+	}
+	return fmt.Sprintf("%ds", sec)
+}
 
 func humanSize(n int64) string {
 	switch {

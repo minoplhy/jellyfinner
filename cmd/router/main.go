@@ -23,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"jellyfinner/internal/buildinfo"
 	"jellyfinner/internal/control"
 	"jellyfinner/internal/doctor"
 	"jellyfinner/internal/edgerouter"
@@ -33,6 +34,7 @@ import (
 const usage = `usage: router [serve]
        router health
        router doctor
+       router version
 
 Settings come from the environment:
   ORCHESTRATOR_URL      the orchestrator's CONTROL_URL
@@ -62,6 +64,8 @@ func main() {
 		err = health()
 	case "doctor":
 		err = runDoctor(ctx)
+	case "version":
+		fmt.Println(buildinfo.Line("router"))
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -125,6 +129,7 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	client.Role = "router"
 	upstream, err := url.Parse(s.jellyfinURL)
 	if err != nil {
 		return err
@@ -138,7 +143,7 @@ func serve(ctx context.Context) error {
 	go heartbeat(ctx, client, logger)
 	errc := make(chan error, 1)
 	go func() { errc <- server.ListenAndServe() }()
-	logger.Printf("router on %s, in front of %s", s.addr, s.jellyfinURL)
+	logger.Printf("%s: router on %s, in front of %s", buildinfo.Line("router"), s.addr, s.jellyfinURL)
 	select {
 	case err = <-errc:
 	case <-ctx.Done():
@@ -207,6 +212,7 @@ func runDoctor(ctx context.Context) error {
 	client, err := control.NewClient(s.orchestratorURL, s.token)
 	r.Check("orchestrator URL", err)
 	if err == nil {
+		client.Role = "router"
 		me, err := client.WhoAmI(ctx)
 		r.Check("orchestrator reachable and token accepted", err)
 		if err == nil && me.Kind != model.NodeRouter {

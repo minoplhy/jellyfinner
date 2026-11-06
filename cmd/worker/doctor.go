@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"jellyfinner/internal/buildinfo"
 	"jellyfinner/internal/control"
 	"jellyfinner/internal/doctor"
 	"jellyfinner/internal/encode"
@@ -44,9 +45,20 @@ func runDoctor(args []string) error {
 		r.Check("test encode with h264_rkmpp", encode.TrialEncode(ctx, *set.ffmpeg, "h264_rkmpp"))
 	}
 
+	info := gatherInfo(ctx, encode.Backend(*set.backend), *set.device, *set.ffmpeg)
+	r.Note(buildinfo.Line("worker"))
+	r.Note(fmt.Sprintf("CPU: %s, %d cores, %d threads", info.CPU, info.Cores, info.Threads))
+	if info.CPULimit > 0 {
+		r.Note(fmt.Sprintf("container CPU limit: %g CPUs", info.CPULimit))
+	}
+	if info.FFmpeg != "" {
+		r.Note(info.FFmpeg)
+	}
+
 	client, err := control.NewClient(*set.url, os.Getenv("NODE_TOKEN"))
 	r.Check("orchestrator URL and token set", err)
 	if err == nil {
+		client.Role = "worker"
 		me, err := client.WhoAmI(ctx)
 		r.Check("orchestrator reachable and token accepted", err)
 		if err == nil && me.Kind != "worker" {

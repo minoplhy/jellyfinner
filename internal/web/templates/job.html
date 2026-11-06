@@ -30,6 +30,25 @@
     <dt>Updated</dt><dd>{{ago .Updated}}</dd>
   </dl>
 </div>
+{{with $.Run}}
+<div class="panel">
+  <h2>Last attempt</h2>
+  <dl class="facts">
+    <dt>Started</dt><dd>{{if .Started.IsZero}}—{{else}}{{datetime .Started}} <span class="muted">({{agoT .Started}})</span>{{end}}</dd>
+    <dt>Finished</dt><dd>{{if .Finished.IsZero}}{{if .Running}}<span class="muted">still running</span>{{else}}—{{end}}{{else}}{{datetime .Finished}} <span class="muted">({{agoT .Finished}})</span>{{end}}</dd>
+    <dt>Total duration</dt><dd>{{if .Total}}{{duration .Total}}{{if .Running}} <span class="muted">so far</span>{{end}}{{else}}—{{end}}</dd>
+    {{with .Timing}}
+    <dt>Encode started</dt><dd>{{if .EncodeStarted.IsZero}}—{{else}}{{datetime .EncodeStarted}}{{end}}{{if .Reused}} <span class="muted">(reused from an earlier attempt)</span>{{end}}</dd>
+    <dt>Encode finished</dt><dd>{{if .EncodeFinished.IsZero}}—{{else}}{{datetime .EncodeFinished}}{{end}}</dd>
+    <dt>Encode duration</dt><dd>{{if .EncodeSeconds}}{{seconds .EncodeSeconds}}{{else}}—{{end}}</dd>
+    {{if .PullSeconds}}<dt>Pull</dt><dd>{{seconds .PullSeconds}}</dd>{{end}}
+    {{if .PushSeconds}}<dt>Push</dt><dd>{{seconds .PushSeconds}}</dd>{{end}}
+    {{end}}
+    {{if or .Backend .Copy}}<dt>Encoder</dt><dd>{{if .Copy}}stream copy, no video encode{{else}}{{template "encoder" .Backend}}{{end}}</dd>{{end}}
+  </dl>
+  <p class="muted small">Start and finish are when the orchestrator handed the job out and got it back. Encode times are on the worker's clock.</p>
+</div>
+{{end}}
 <div class="page-head">
   <h2>Log</h2>
   {{if .Log}}<div class="actions"><a class="button small" href="{{base}}/jobs/{{.ID}}/log" download>Download</a></div>{{end}}

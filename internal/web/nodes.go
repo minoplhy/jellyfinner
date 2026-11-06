@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"jellyfinner/internal/control"
 	"jellyfinner/internal/model"
 	"jellyfinner/internal/orchestrator"
 )
@@ -21,6 +22,32 @@ type workerView struct {
 	Seen   time.Time
 	Active []*model.Job
 	Failed int
+	// Report is what the worker last said about itself.
+	Report control.NodeReport
+}
+
+// LiveEncoder is the encoder the worker is running now, for the job it is
+// on: "", "software", "copy" or a hardware backend.
+func (v workerView) LiveEncoder(jobID string) string {
+	if v.Report.Job != jobID {
+		return ""
+	}
+	return v.Report.Backend
+}
+
+// FellBack reports a worker set up for hardware that is encoding in software.
+func (v workerView) FellBack(jobID string) bool {
+	live := v.LiveEncoder(jobID)
+	w := v.Report.Worker
+	return live == "software" && w != nil && w.Backend != "" && w.Backend != "software"
+}
+
+// EncodeSince is when the current job's encode started, if it is encoding.
+func (v workerView) EncodeSince(jobID string) time.Time {
+	if v.Report.Job != jobID || v.Report.Stage != "encode" {
+		return time.Time{}
+	}
+	return v.Report.EncodeSince
 }
 
 // routerView is a router on the Nodes page.
@@ -30,6 +57,18 @@ type routerView struct {
 	Allow string
 	State nodeState
 	Seen  time.Time
+	Build build
+}
+
+// build is the version and platform a program reported. Zero when unknown.
+type build struct {
+	Version  string
+	Platform string // such as "linux/arm64; go1.27.3"
+}
+
+func buildFrom(userAgent string) build {
+	v, p := control.ParseUserAgent(userAgent)
+	return build{Version: v, Platform: p}
 }
 
 // edgeView is an edge node on the Nodes page.
@@ -37,6 +76,8 @@ type edgeView struct {
 	orchestrator.NodeRow
 	State    nodeState
 	DiskUsed int64
+	Agent    build // the pull agent, from its calls
+	Server   build // the file server, from the signed health probe
 }
 
 type nodesData struct {
@@ -98,15 +139,16 @@ func (s *Server) nodesData(csrf string) (nodesData, error) {
 		return data, err
 	}
 	seen := s.lastSeen()
+	reports := s.nodeReports()
 	for _, n := range s.svc.Nodes.All() {
 		if n.Router() {
 			data.Routers = append(data.Routers, routerView{ID: n.ID, Name: n.Name, Allow: orchestrator.AllowString(n.Allow),
-				State: s.routerState(seen[n.ID]), Seen: seen[n.ID]})
+				State: s.routerState(seen[n.ID]), Seen: seen[n.ID], Build: buildFrom(reports[n.ID].UserAgent)})
 		}
 		if !n.Worker() {
 			continue
 		}
-		v := workerView{ID: n.ID, Name: n.Name, Paused: n.Paused, Seen: seen[n.ID], Failed: failed[n.ID]}
+		v := workerView{ID: n.ID, Name: n.Name, Paused: n.Paused, Seen: seen[n.ID], Failed: failed[n.ID], Report: reports[n.ID]}
 		v.State = s.workerState(v.Seen, n.Paused)
 		for _, j := range jobs {
 			if active(j) && j.Node == n.ID {
@@ -121,7 +163,8 @@ func (s *Server) nodesData(csrf string) (nodesData, error) {
 	}
 	for _, row := range rows {
 		data.Edges = append(data.Edges, edgeView{NodeRow: row, State: s.edgeState(row.Status),
-			DiskUsed: row.Status.DiskTotal - row.Status.DiskFree})
+			DiskUsed: row.Status.DiskTotal - row.Status.DiskFree,
+			Agent:    buildFrom(reports[row.ID].UserAgent), Server: buildFrom(s.svc.ServeBuild(row.ID))})
 	}
 	return data, nil
 }

@@ -76,6 +76,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The version every program reports: the tag for a release, otherwise
+      # the branch, always with the commit, such as 1.2.3+sha-abc1234.
+      - name: Set version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$REF_TYPE" = tag ]; then name="${REF_NAME#v}"; else name="${HEAD_REF:-$REF_NAME}"; fi
+          name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '-')
+          echo "VERSION=${name}+sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -94,6 +106,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ env.VERSION }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
