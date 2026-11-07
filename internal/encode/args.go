@@ -59,6 +59,16 @@ func inputArgs(plan *Plan, prof Profile, backend Backend) []string {
 	return []string{"-hwaccel", "vaapi", "-hwaccel_device", prof.Device, "-hwaccel_output_format", "vaapi"}
 }
 
+// rkmppMinQP is the best quality h264_rkmpp may use. An encoder can be told
+// "spend this many bits" or "look this good". VBR alone is the first: it fills
+// the bitrate on every scene, about three times libx264's size on anime. The
+// floor makes it the second, like libx264's -crf 20: flat scenes stop at this
+// quality and use far fewer bits, and busy ones still stop at the bitrate cap.
+// To re-tune it, encode the same sample with libx264 -crf 20 and with a few
+// values here on the board, and keep the lowest that is no larger and looks
+// the same.
+const rkmppMinQP = 23
+
 func videoArgs(plan *Plan, prof Profile, backend Backend) []string {
 	if plan.Video.Copy {
 		return []string{"-c:v", "copy"}
@@ -75,7 +85,9 @@ func videoArgs(plan *Plan, prof Profile, backend Backend) []string {
 		return append(args, "-c:v", "h264_vaapi", "-rc_mode", "VBR", "-b:v", fmt.Sprintf("%dk", kbps))
 	}
 	if backend == BackendRKMPP {
-		return append(args, "-c:v", "h264_rkmpp", "-rc_mode", "VBR", "-b:v", fmt.Sprintf("%dk", kbps))
+		q := strconv.Itoa(rkmppMinQP)
+		return append(args, "-c:v", "h264_rkmpp", "-rc_mode", "VBR", "-b:v", fmt.Sprintf("%dk", kbps),
+			"-qp_min", q, "-qp_min_i", q)
 	}
 	return append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p")
 }
