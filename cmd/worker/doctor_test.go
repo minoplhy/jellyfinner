@@ -60,3 +60,24 @@ func TestCheckRKMPPDevicesPermission(t *testing.T) {
 		t.Fatalf("an unopenable rga must be named first: %v", err)
 	}
 }
+
+func TestCheckDeviceTree(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compatible")
+	err := checkDeviceTree(path)
+	if err == nil || !strings.Contains(err.Error(), "systempaths=unconfined") {
+		t.Fatalf("a hidden device tree must point at the fix: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("raspberrypi,5-model-b\x00brcm,bcm2712\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkDeviceTree(path); err == nil || !strings.Contains(err.Error(), "brcm,bcm2712") {
+		t.Fatalf("another vendor's chip must be named: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("radxa,rock-4d\x00rockchip,rk3576\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkDeviceTree(path); err != nil {
+		t.Fatalf("an RK3576 board: %v", err)
+	}
+}

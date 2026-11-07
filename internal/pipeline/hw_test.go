@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"jellyfinner/internal/encode"
@@ -59,6 +60,11 @@ func TestHardwareEncode(t *testing.T) {
 			}
 			if manifest.Backend != backend {
 				t.Fatalf("backend = %q, want %q: the hardware failed and software took over\n%s", manifest.Backend, backend, log)
+			}
+			// The software decode retry also reports the hardware backend, so
+			// only the log shows that the hardware decoder was refused.
+			if strings.Contains(log.String(), "backend "+string(backend)+" failed") {
+				t.Fatalf("the full hardware path failed and the CPU decoded instead\n%s", log)
 			}
 		})
 	}

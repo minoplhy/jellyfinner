@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,6 +46,7 @@ func runDoctor(args []string) error {
 	}
 	if encode.Backend(*set.backend) == encode.BackendRKMPP {
 		r.Check("Rockchip devices in /dev", checkRKMPPDevices("/dev"))
+		r.Check("chip readable from the device tree", checkDeviceTree("/proc/device-tree/compatible"))
 		r.Check("ffmpeg has h264_rkmpp", encode.HasEncoder(ctx, *set.ffmpeg, "h264_rkmpp"))
 		r.Check("test encode with h264_rkmpp", encode.TrialEncode(ctx, *set.ffmpeg, "h264_rkmpp"))
 	}
@@ -96,6 +98,21 @@ func checkRKMPPDevices(dev string) error {
 		if err := openDevice(path); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// checkDeviceTree checks that MPP can name the chip. It reads the device tree
+// to choose each codec's hardware block, and without it a codec such as HEVC
+// on the RK3576 fails while H.264 still works. Docker hides /sys/firmware, which
+// /proc/device-tree points into, from every container by default.
+func checkDeviceTree(compatible string) error {
+	data, err := os.ReadFile(compatible)
+	if err != nil {
+		return fmt.Errorf("cannot read %s, so MPP cannot tell which chip this is and some codecs fail to open. Add \"systempaths=unconfined\" to the worker's security_opt: %w", compatible, err)
+	}
+	if !strings.Contains(string(data), "rockchip,") {
+		return fmt.Errorf("%s names no Rockchip chip: %q", compatible, strings.ReplaceAll(strings.TrimRight(string(data), "\x00"), "\x00", " "))
 	}
 	return nil
 }

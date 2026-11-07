@@ -188,6 +188,7 @@ jobs:
           docker run --rm -v "$PWD/pipeline.test:/pipeline.test:ro" -w /tmp \
             --device /dev/mpp_service --device /dev/rga --device /dev/dri --device /dev/dma_heap \
             --group-add "$(getent group video | cut -d: -f3)" \
+            --security-opt systempaths=unconfined \
             -e JELLYFINNER_HW=rkmpp \
             -e PATH=/usr/lib/jellyfin-ffmpeg:/usr/local/bin:/usr/bin:/bin \
             --entrypoint /pipeline.test "$image" -test.v -test.run 'TestHardwareEncode'

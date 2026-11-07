@@ -40,8 +40,8 @@ services:
       # To encode with a VAAPI GPU, uncomment these and the group_add below.
       # ENCODER: vaapi
       # VAAPI_DEVICE: /dev/dri/renderD128
-      # To encode on a Rockchip board, uncomment this and the RKMPP devices and
-      # group below. It needs Rockchip's vendor kernel, which provides
+      # To encode on a Rockchip board, uncomment this and the RKMPP devices,
+      # group and security_opt below. It needs Rockchip's vendor kernel, which provides
       # /dev/mpp_service. Then run "docker compose run --rm worker doctor": if
       # the worker cannot open the devices, every job falls back to software.
       # ENCODER: rkmpp
@@ -69,6 +69,11 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+      # RKMPP: lets the encoder read /proc/device-tree to identify the chip.
+      # Docker hides it by default, and HEVC then fails to decode in hardware.
+      # This unhides every path Docker hides in /proc and /sys; the worker
+      # still runs unprivileged with no capabilities.
+      # - systempaths=unconfined
     healthcheck:
       test: ["CMD", "worker", "health"]
       interval: 30s
