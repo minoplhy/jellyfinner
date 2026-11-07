@@ -60,7 +60,19 @@ Keep whichever is faster. Paths in rclone must be the ones the SSH user sees.
 
 On a Rockchip board such as an RK3588, the worker can encode with RKMPP. The board must run Rockchip's vendor kernel, because mainline kernels have no `/dev/mpp_service`.
 
-1. Uncomment `ENCODER: rkmpp` and the RKMPP `devices` in the worker's compose file. Set `group_add` to the host's `video` group ID (`getent group video | cut -d: -f3`), not `render`: `video` owns `/dev/mpp_service`, `/dev/rga` and `/dev/dma_heap`. Check with `ls -l` on those nodes if unsure.
+1. Uncomment `ENCODER: rkmpp` and the RKMPP `devices` in the worker's compose file. Set `group_add` to the host's `video` group ID (`getent group video | cut -d: -f3`), not `render`: `video` owns `/dev/mpp_service`, `/dev/rga` and `/dev/dma_heap`. Check with `ls -l` on those nodes if unsure. If they show group `root` instead, as some board images do after a reboot, run this once on the host as root. It adds a udev rule so they always come up as `video`, mode `660`:
+
+   ```sh
+   cat > /etc/udev/rules.d/99-rockchip-media.rules <<'EOF'
+   KERNEL=="mpp_service", GROUP="video", MODE="0660"
+   KERNEL=="rga", GROUP="video", MODE="0660"
+   SUBSYSTEM=="dma_heap", GROUP="video", MODE="0660"
+   EOF
+   udevadm control --reload && udevadm trigger
+   ls -l /dev/mpp_service /dev/rga /dev/dma_heap/*
+   ```
+
+   The last line should show `video` on each. Never add group `0` to `group_add` instead.
 2. Uncomment `systempaths=unconfined` under the worker's `security_opt`. MPP reads `/proc/device-tree/compatible` to identify the chip, and Docker hides it from containers by default. Without it, MPP falls back to a generic list: H.264 still works, but HEVC fails to decode in hardware on chips such as the RK3576 (`Failed to init MPP context`). The option unhides every path Docker hides in `/proc` and `/sys`, not just this one. The worker still runs as an unprivileged user with no capabilities.
 3. **Check:** `docker compose run --rm worker doctor` passes the Rockchip device, device tree, encoder and test encode checks. The device check opens each node, so a wrong group fails here with the group ID to add.
 4. Re-encode the test episode. **Check:** its manifest on the Queue page says `backend: rkmpp`, not `software`, and the job log has no `backend rkmpp failed:` line.

@@ -127,7 +127,10 @@ func openDevice(path string) error {
 	if !errors.Is(err, fs.ErrPermission) {
 		return fmt.Errorf("cannot open %s: %w", path, err)
 	}
-	if gid, ok := deviceGroup(path); ok {
+	if gid, ok := deviceGroup(path); ok && gid == 0 {
+		// Adding root's group would grant far more than the device.
+		return fmt.Errorf("cannot open %s: permission denied. It belongs to group root, so no group_add can open it safely. On the host, give it to the video group (chgrp video, mode 660), and add a udev rule so that lasts after a reboot", path)
+	} else if ok {
 		return fmt.Errorf("cannot open %s: permission denied. It belongs to group %d (usually video on the host), so add %q to the worker's group_add", path, gid, strconv.Itoa(gid))
 	}
 	return fmt.Errorf("cannot open %s: permission denied. Add the group that owns it (usually video) to the worker's group_add", path)

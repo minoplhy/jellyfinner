@@ -61,6 +61,9 @@ services:
     #   # VAAPI: the render group, which owns /dev/dri/renderD*.
     #   - "989" # EDIT: the output of getent group render | cut -d: -f3
     #   # RKMPP: the video group, which owns mpp_service, rga and dma_heap.
+    #   # If ls -l shows those as group root instead (some board images, after
+    #   # a reboot), add the udev rule from deploy/first-run.md on the host.
+    #   # Never add group 0 here.
     #   - "44" # EDIT: the output of getent group video | cut -d: -f3
     read_only: true
     tmpfs:
