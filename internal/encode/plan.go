@@ -99,7 +99,7 @@ func NewPlan(p *Probe, prof Profile, forceEncode bool) (*Plan, error) {
 		return nil, errors.New("plan: source has no duration")
 	}
 
-	plan := &Plan{Duration: p.Duration()}
+	plan := &Plan{}
 	w, h := fitDimensions(v.Width, v.Height, prof.MaxWidth, prof.MaxHeight)
 	plan.Video = VideoPlan{
 		Index:   v.Index,
@@ -137,7 +137,34 @@ func NewPlan(p *Probe, prof Profile, forceEncode bool) (*Plan, error) {
 		}
 		plan.Skipped = append(plan.Skipped, fmt.Sprintf("subtitle #%d (%s, %s): image subtitles are not served", s.Index, s.CodecName, s.Language()))
 	}
+	plan.Duration = outputDuration(p, v, kept)
 	return plan, nil
+}
+
+// outputDuration is how long the output should be. The container duration
+// covers every stream, so a subtitle or a dropped audio track that runs past
+// the video would make a correct output look truncated. Only the streams the
+// output keeps count. The container duration stays as the fallback.
+func outputDuration(p *Probe, video *Stream, audio []Stream) float64 {
+	first, last := 0.0, 0.0
+	found := false
+	for _, s := range append([]Stream{*video}, audio...) {
+		start, end, ok := s.span()
+		if !ok {
+			return p.Duration()
+		}
+		if !found || start < first {
+			first = start
+		}
+		if !found || end > last {
+			last = end
+		}
+		found = true
+	}
+	if d := last - first; d > 0 {
+		return d
+	}
+	return p.Duration()
 }
 
 func selectAudio(audio []Stream, languages []string) []Stream {

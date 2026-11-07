@@ -434,3 +434,50 @@ func TestIsSidecar(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanDurationIgnoresDroppedStreams(t *testing.T) {
+	v := h264()
+	v.Tags = map[string]string{"DURATION": "00:24:00.000000000"}
+	a := aac()
+	a.Tags = map[string]string{"DURATION": "00:23:59.980000000"}
+	dropped := Stream{Index: 2, CodecType: "audio", CodecName: "aac", Channels: 2,
+		Tags: map[string]string{"language": "jpn", "DURATION": "00:24:01.400000000"}}
+	sub := Stream{Index: 3, CodecType: "subtitle", CodecName: "ass",
+		Tags: map[string]string{"DURATION": "00:24:01.400000000"}}
+	a.Tags["language"] = "eng"
+	p := probeOf(v, a, dropped, sub)
+	p.Format.Duration = "1441.400000"
+
+	prof := DefaultProfile()
+	prof.Languages = []string{"eng"}
+	plan, err := NewPlan(p, prof, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Duration < 1439.99 || plan.Duration > 1440.01 {
+		t.Errorf("duration %.3f, want 1440", plan.Duration)
+	}
+}
+
+func TestPlanDurationStartOffsetAndFallback(t *testing.T) {
+	v := h264()
+	v.StartTime, v.Duration = "0.500000", "99.000000"
+	a := aac()
+	a.StartTime, a.Duration = "0.000000", "99.000000"
+	plan, err := NewPlan(probeOf(v, a), DefaultProfile(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Duration != 99.5 {
+		t.Errorf("duration %.3f, want 99.5", plan.Duration)
+	}
+
+	// One kept stream with no known length: use the container duration.
+	plan, err = NewPlan(probeOf(v, aac()), DefaultProfile(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Duration != 100 {
+		t.Errorf("fallback duration %.3f, want 100", plan.Duration)
+	}
+}

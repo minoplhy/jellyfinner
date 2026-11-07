@@ -23,6 +23,8 @@ type Stream struct {
 	ColorSpace    string            `json:"color_space"`
 	Channels      int               `json:"channels"`
 	BitRate       string            `json:"bit_rate"`
+	StartTime     string            `json:"start_time"`
+	Duration      string            `json:"duration"`
 	Tags          map[string]string `json:"tags"`
 	Disposition   map[string]int    `json:"disposition"`
 	SideData      []struct {
@@ -94,6 +96,34 @@ func (p *Probe) Duration() float64 {
 		return 0
 	}
 	return d
+}
+
+// span returns when the stream starts and ends, in seconds. ok is false when
+// its length is unknown. MKV keeps the length only in a DURATION tag.
+func (s *Stream) span() (start, end float64, ok bool) {
+	start, _ = strconv.ParseFloat(s.StartTime, 64)
+	d, err := strconv.ParseFloat(s.Duration, 64)
+	if err != nil || d <= 0 {
+		d, ok = parseClock(s.Tags["DURATION"])
+		if !ok {
+			d, ok = parseClock(s.Tags["DURATION-eng"])
+		}
+		if !ok {
+			return 0, 0, false
+		}
+	}
+	return start, start + d, true
+}
+
+// parseClock reads an MKV duration tag such as "00:24:00.024000000".
+func parseClock(v string) (float64, bool) {
+	var h, m int
+	var sec float64
+	if _, err := fmt.Sscanf(v, "%d:%d:%f", &h, &m, &sec); err != nil {
+		return 0, false
+	}
+	d := float64(h*3600+m*60) + sec
+	return d, d > 0
 }
 
 // Language returns the stream's language tag, or "und" if it has none.
