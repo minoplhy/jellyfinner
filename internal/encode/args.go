@@ -23,7 +23,8 @@ func ValidBackend(b Backend) bool {
 
 // softwareTonemap converts HDR to BT.709 SDR on the CPU. It needs zimg, which
 // jellyfin-ffmpeg includes. It is the one path every GPU shares, so the VAAPI
-// and RKMPP backends use it too, and only the encode runs on the hardware.
+// and RKMPP backends use it too, and only the encode runs on the hardware, as
+// it does after a hardware decode fails.
 const softwareTonemap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709," +
 	"tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
 
@@ -46,13 +47,13 @@ func EncodeArgs(src, out string, plan *Plan, prof Profile, backend Backend) []st
 
 func inputArgs(plan *Plan, prof Profile, backend Backend) []string {
 	switch {
-	case backend == BackendRKMPP && !plan.Video.Tonemap:
+	case backend == BackendRKMPP && plan.Video.hardwareFrames():
 		// Frames stay in hardware memory from the decoder to the encoder.
 		return []string{"-hwaccel", "rkmpp", "-hwaccel_output_format", "drm_prime"}
 	case backend != BackendVAAPI:
 		return nil
 	}
-	if plan.Video.Tonemap {
+	if !plan.Video.hardwareFrames() {
 		return []string{"-vaapi_device", prof.Device}
 	}
 	return []string{"-hwaccel", "vaapi", "-hwaccel_device", prof.Device, "-hwaccel_output_format", "vaapi"}
@@ -81,12 +82,12 @@ func videoArgs(plan *Plan, prof Profile, backend Backend) []string {
 
 func videoFilter(plan *Plan, backend Backend) string {
 	v := plan.Video
-	if backend == BackendVAAPI && !v.Tonemap {
+	if backend == BackendVAAPI && v.hardwareFrames() {
 		return fmt.Sprintf("scale_vaapi=w=%d:h=%d:format=nv12", v.Width, v.Height)
 	}
 	// Always present, because the RGA also turns 10-bit sources into the
 	// encoder's 8-bit NV12 when no scaling is needed.
-	if backend == BackendRKMPP && !v.Tonemap {
+	if backend == BackendRKMPP && v.hardwareFrames() {
 		return fmt.Sprintf("scale_rkrga=w=%d:h=%d:format=nv12", v.Width, v.Height)
 	}
 	var chain []string

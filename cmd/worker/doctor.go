@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"time"
 
 	"jellyfinner/internal/buildinfo"
@@ -71,7 +75,9 @@ func runDoctor(args []string) error {
 }
 
 // checkRKMPPDevices looks for the device nodes the Rockchip encoder and scaler
-// open. The encoder's own node exists only on Rockchip's vendor kernel.
+// open, and opens them the way ffmpeg will. The encoder's own node exists only
+// on Rockchip's vendor kernel. A node that is present but not openable is the
+// usual cause of a hardware job quietly falling back to software.
 func checkRKMPPDevices(dev string) error {
 	if _, err := os.Stat(filepath.Join(dev, "mpp_service")); err != nil {
 		return fmt.Errorf("%s is missing. RKMPP needs Rockchip's vendor kernel (BSP), because mainline kernels lack MPP, and the device must be passed into the container",
@@ -82,5 +88,42 @@ func checkRKMPPDevices(dev string) error {
 			return fmt.Errorf("%s is missing. Pass it into the container", filepath.Join(dev, name))
 		}
 	}
+	nodes := []string{filepath.Join(dev, "mpp_service"), filepath.Join(dev, "rga")}
+	// Optional: only newer vendor kernels have it, but when present, MPP and
+	// the RGA allocate their buffers from it.
+	heaps, _ := filepath.Glob(filepath.Join(dev, "dma_heap", "*"))
+	for _, path := range append(nodes, heaps...) {
+		if err := openDevice(path); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// openDevice opens a device node read-write, as the encoder does. On a
+// permission error it names the node's group, which is what group_add needs.
+func openDevice(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err == nil {
+		return f.Close()
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("cannot open %s: %w", path, err)
+	}
+	if gid, ok := deviceGroup(path); ok {
+		return fmt.Errorf("cannot open %s: permission denied. It belongs to group %d (usually video on the host), so add %q to the worker's group_add", path, gid, strconv.Itoa(gid))
+	}
+	return fmt.Errorf("cannot open %s: permission denied. Add the group that owns it (usually video) to the worker's group_add", path)
+}
+
+func deviceGroup(path string) (int, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(st.Gid), true
 }

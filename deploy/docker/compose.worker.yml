@@ -40,13 +40,17 @@ services:
       # To encode with a VAAPI GPU, uncomment these and the group_add below.
       # ENCODER: vaapi
       # VAAPI_DEVICE: /dev/dri/renderD128
-      # To encode on a Rockchip board, uncomment this and the RKMPP devices
-      # below. It needs Rockchip's vendor kernel, which provides /dev/mpp_service.
+      # To encode on a Rockchip board, uncomment this and the RKMPP devices and
+      # group below. It needs Rockchip's vendor kernel, which provides
+      # /dev/mpp_service. Then run "docker compose run --rm worker doctor": if
+      # the worker cannot open the devices, every job falls back to software.
       # ENCODER: rkmpp
       # To compare rclone in the transfer speed test.
       # TRANSFER: rclone
     volumes: *volumes
+    # Keep "devices:" and "group_add:" at the same indent as "volumes:".
     # devices:
+    #   # VAAPI:
     #   - /dev/dri/renderD128:/dev/dri/renderD128
     #   # RKMPP uses these instead of the line above.
     #   - /dev/mpp_service:/dev/mpp_service
@@ -54,7 +58,10 @@ services:
     #   - /dev/dri:/dev/dri
     #   - /dev/dma_heap:/dev/dma_heap
     # group_add:
-    #   - "989" # EDIT: the output of getent group render | cut -d: -f3 (for RKMPP, group video)
+    #   # VAAPI: the render group, which owns /dev/dri/renderD*.
+    #   - "989" # EDIT: the output of getent group render | cut -d: -f3
+    #   # RKMPP: the video group, which owns mpp_service, rga and dma_heap.
+    #   - "44" # EDIT: the output of getent group video | cut -d: -f3
     read_only: true
     tmpfs:
       - /tmp

@@ -48,6 +48,17 @@ type VideoPlan struct {
 	Width   int
 	Height  int
 	Scale   bool
+	// SoftwareDecode decodes and scales on the CPU and leaves only the encode
+	// to the hardware. It is the retry for a source the hardware decoder
+	// rejects, such as HEVC on some Rockchip kernels.
+	SoftwareDecode bool
+}
+
+// hardwareFrames reports whether frames can stay in hardware memory from the
+// decoder to the encoder. Tonemapping and software decoding both need them in
+// system memory.
+func (v VideoPlan) hardwareFrames() bool {
+	return !v.Tonemap && !v.SoftwareDecode
 }
 
 // AudioPlan says how one audio stream is produced.

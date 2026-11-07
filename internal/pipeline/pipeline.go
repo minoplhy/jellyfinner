@@ -284,22 +284,25 @@ func logRate(log io.Writer, stage string, size int64, started time.Time) {
 	fmt.Fprintf(log, "%s: %.1f MB in %.1fs, %.1f MB/s\n", stage, float64(size)/1e6, seconds, float64(size)/1e6/seconds)
 }
 
-// encodeVideo tries the configured backend, then falls back to software. It
-// returns the backend that produced a verified file, or "" for a stream copy.
+// encodeVideo tries the configured backend, then the same hardware encoder fed
+// by a software decode, then software. It returns the backend that produced a
+// verified file, or "" for a stream copy.
 func encodeVideo(ctx context.Context, cfg Config, j *job.Job, profile encode.Profile, src, out string, plan *encode.Plan, log io.Writer, progress Progress) (encode.Backend, error) {
 	report := func(f float64) { progress("encode", f) }
 	verify := func() error {
 		return encode.Verify(ctx, cfg.FFmpeg, cfg.FFprobe, out, plan, log)
 	}
-	attempt := func(backend encode.Backend) error {
+	attempt := func(try encodeAttempt) error {
 		if cfg.OnBackend != nil {
 			if plan.Video.Copy {
 				cfg.OnBackend(BackendCopy)
 			} else {
-				cfg.OnBackend(backend)
+				cfg.OnBackend(try.backend)
 			}
 		}
-		args := encode.EncodeArgs(src, out, plan, profile, backend)
+		p := *plan
+		p.Video.SoftwareDecode = try.softwareDecode
+		args := encode.EncodeArgs(src, out, &p, profile, try.backend)
 		if err := encode.Run(ctx, cfg.FFmpeg, args, plan.Duration, log, report); err != nil {
 			return err
 		}
@@ -307,27 +310,50 @@ func encodeVideo(ctx context.Context, cfg Config, j *job.Job, profile encode.Pro
 	}
 
 	if plan.Video.Copy {
-		return "", attempt(cfg.Backend)
-	}
-	backends := []encode.Backend{cfg.Backend}
-	if j.Software {
-		backends = []encode.Backend{encode.BackendSoftware}
-	} else if cfg.Backend != encode.BackendSoftware {
-		backends = append(backends, encode.BackendSoftware)
+		return "", attempt(encodeAttempt{backend: cfg.Backend})
 	}
 	var errs []error
-	for _, backend := range backends {
-		err := attempt(backend)
+	for _, try := range encodeAttempts(cfg.Backend, j.Software, plan.Video) {
+		err := attempt(try)
 		if err == nil {
-			return backend, nil
+			return try.backend, nil
 		}
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		fmt.Fprintf(log, "backend %s failed: %v\n", backend, err)
-		errs = append(errs, fmt.Errorf("%s: %w", backend, err))
+		fmt.Fprintf(log, "backend %s failed: %v\n", try, err)
+		errs = append(errs, fmt.Errorf("%s: %w", try, err))
 	}
 	return "", errors.Join(errs...)
+}
+
+// encodeAttempt is one way to encode the video.
+type encodeAttempt struct {
+	backend        encode.Backend
+	softwareDecode bool
+}
+
+func (a encodeAttempt) String() string {
+	if a.softwareDecode {
+		return string(a.backend) + " with software decode"
+	}
+	return string(a.backend)
+}
+
+// encodeAttempts lists the ways to try, best first. A hardware decoder can
+// reject a codec the encoder is fine with, so the hardware encoder is tried
+// again on CPU-decoded frames before everything moves to the CPU. Tonemapped
+// sources already decode in software, so for them that retry would repeat the
+// first attempt.
+func encodeAttempts(backend encode.Backend, forceSoftware bool, v encode.VideoPlan) []encodeAttempt {
+	if forceSoftware || backend == encode.BackendSoftware {
+		return []encodeAttempt{{backend: encode.BackendSoftware}}
+	}
+	tries := []encodeAttempt{{backend: backend}}
+	if !v.Tonemap {
+		tries = append(tries, encodeAttempt{backend: backend, softwareDecode: true})
+	}
+	return append(tries, encodeAttempt{backend: encode.BackendSoftware})
 }
 
 func extractSubtitles(ctx context.Context, cfg Config, src, outDir, base string, plan *encode.Plan, log io.Writer) ([]string, error) {

@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,8 +212,35 @@ func TestRunFallsBackToSoftware(t *testing.T) {
 			if manifest.Backend != encode.BackendSoftware {
 				t.Errorf("backend = %q, want software fallback", manifest.Backend)
 			}
-			if len(tried) != 2 || tried[0] != backend || tried[1] != encode.BackendSoftware {
-				t.Errorf("OnBackend heard %v, want [%s software]", tried, backend)
+			if len(tried) != 3 || tried[0] != backend || tried[1] != backend || tried[2] != encode.BackendSoftware {
+				t.Errorf("OnBackend heard %v, want [%s %s software]", tried, backend, backend)
+			}
+			if !strings.Contains(log.String(), "backend "+string(backend)+" with software decode failed") {
+				t.Errorf("the software decode retry is not in the log:\n%s", log)
+			}
+		})
+	}
+}
+
+func TestEncodeAttempts(t *testing.T) {
+	hw := encodeAttempt{backend: encode.BackendRKMPP}
+	hwSoftDecode := encodeAttempt{backend: encode.BackendRKMPP, softwareDecode: true}
+	sw := encodeAttempt{backend: encode.BackendSoftware}
+	for _, tc := range []struct {
+		name    string
+		backend encode.Backend
+		force   bool
+		video   encode.VideoPlan
+		want    []encodeAttempt
+	}{
+		{"hardware", encode.BackendRKMPP, false, encode.VideoPlan{}, []encodeAttempt{hw, hwSoftDecode, sw}},
+		{"tonemap already decodes in software", encode.BackendRKMPP, false, encode.VideoPlan{Tonemap: true}, []encodeAttempt{hw, sw}},
+		{"job forced to software", encode.BackendRKMPP, true, encode.VideoPlan{}, []encodeAttempt{sw}},
+		{"software worker", encode.BackendSoftware, false, encode.VideoPlan{}, []encodeAttempt{sw}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := encodeAttempts(tc.backend, tc.force, tc.video); !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
 	}

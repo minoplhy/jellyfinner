@@ -257,6 +257,29 @@ func TestEncodeArgsRKMPP(t *testing.T) {
 	if strings.Contains(got, "-hwaccel") || strings.Contains(got, "rkrga") || strings.Contains(got, "hwupload") {
 		t.Errorf("the CPU tonemap needs software decode and system memory frames: %s", got)
 	}
+
+	// The retry for a source the hardware decoder rejects keeps the encoder.
+	softDecode := base
+	softDecode.Video = VideoPlan{SoftwareDecode: true, Width: 1280, Height: 720, Scale: true}
+	got = join(EncodeArgs("in", "out", &softDecode, prof, BackendRKMPP))
+	hasAll(t, got, "-vf scale=1280:720:flags=lanczos,format=nv12 ", "-c:v h264_rkmpp")
+	if strings.Contains(got, "-hwaccel") || strings.Contains(got, "rkrga") || strings.Contains(got, "tonemap") {
+		t.Errorf("software decode must keep frames off the hardware decoder and scaler: %s", got)
+	}
+}
+
+func TestEncodeArgsVAAPISoftwareDecode(t *testing.T) {
+	plan := Plan{Audio: []AudioPlan{{Index: 1}}, Duration: 10}
+	plan.Video = VideoPlan{SoftwareDecode: true, Width: 1920, Height: 1080}
+	got := join(EncodeArgs("in", "out", &plan, DefaultProfile(), BackendVAAPI))
+	for _, want := range []string{"-vaapi_device", "-vf format=nv12,hwupload ", "h264_vaapi"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "-hwaccel ") || strings.Contains(got, "scale_vaapi") {
+		t.Errorf("software decode must not use the hardware decoder: %s", got)
+	}
 }
 
 func TestValidBackend(t *testing.T) {

@@ -60,9 +60,11 @@ Keep whichever is faster. Paths in rclone must be the ones the SSH user sees.
 
 On a Rockchip board such as an RK3588, the worker can encode with RKMPP. The board must run Rockchip's vendor kernel, because mainline kernels have no `/dev/mpp_service`.
 
-1. Uncomment `ENCODER: rkmpp` and the RKMPP `devices` in the worker's compose file. Set `group_add` to the host's `video` group ID.
-2. **Check:** `docker compose run --rm worker doctor` passes the Rockchip device, encoder and test encode checks.
+1. Uncomment `ENCODER: rkmpp` and the RKMPP `devices` in the worker's compose file. Set `group_add` to the host's `video` group ID (`getent group video | cut -d: -f3`), not `render`: `video` owns `/dev/mpp_service`, `/dev/rga` and `/dev/dma_heap`. Check with `ls -l` on those nodes if unsure.
+2. **Check:** `docker compose run --rm worker doctor` passes the Rockchip device, encoder and test encode checks. The device check opens each node, so a wrong group fails here with the group ID to add.
 3. Re-encode the test episode. **Check:** its manifest on the Queue page says `backend: rkmpp`, not `software`.
+
+If the hardware path fails, the worker doesn't fail the job. It first retries with the CPU decoding and the hardware still encoding, which covers a hardware decoder that rejects a codec, such as HEVC on some RK3576 vendor kernels. If that fails too, it encodes in software. The job log has a `backend rkmpp failed:` line with ffmpeg's error for each failed attempt, and a full software fallback shows as `software (fallback)` on the Nodes page. `ps -eo args | grep [f]fmpeg` on the board shows `h264_rkmpp` for a hardware encode and `libx264` for software. To see whether the video engine is busy, watch `/proc/mpp_service/load` after `echo 1000 > /proc/mpp_service/load_interval`, or watch the `rkvenc`/`rkvdec` counts in `/proc/interrupts`. The Mali GPU stays idle either way, because RKMPP doesn't use it.
 
 To prove each new image on the board, enrol it as a self-hosted GitHub Actions runner with the labels `linux`, `arm64` and `rkmpp`, then start the Images workflow by hand with `hardware: rkmpp`. That job never runs for pull requests, so code from strangers never reaches the board.
 
