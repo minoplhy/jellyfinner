@@ -247,7 +247,7 @@ func TestEncodeArgsRKMPP(t *testing.T) {
 		"-vf scale_rkrga=w=1920:h=1080:format=nv12",
 		"-c:v h264_rkmpp", "-rc_mode VBR", "-b:v 8000k", "-maxrate 8000k", "-bufsize 16000k",
 		"-profile:v high", "-force_key_frames expr:gte(t,n_forced*3)",
-		"-qp_min 23 -qp_min_i 23")
+		"-qp_min 18 -qp_min_i 18")
 
 	scaled := base
 	scaled.Video = VideoPlan{Width: 1280, Height: 720, Scale: true}

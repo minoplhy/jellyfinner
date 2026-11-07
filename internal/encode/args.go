@@ -67,7 +67,7 @@ func inputArgs(plan *Plan, prof Profile, backend Backend) []string {
 // To re-tune it, encode the same sample with libx264 -crf 20 and with a few
 // values here on the board, and keep the lowest that is no larger and looks
 // the same.
-const rkmppMinQP = 23
+const rkmppMinQP = 18
 
 func videoArgs(plan *Plan, prof Profile, backend Backend) []string {
 	if plan.Video.Copy {
