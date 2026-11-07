@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -169,6 +170,8 @@ type jobRun struct {
 	Backend  string
 	Copy     bool
 	Timing   *pipeline.Timing // from the worker's manifest
+	// OutputSize is the uploaded video file, without subtitle sidecars.
+	OutputSize int64
 }
 
 func newJobRun(j *model.Job, now time.Time) jobRun {
@@ -190,9 +193,23 @@ func newJobRun(j *model.Job, now time.Time) jobRun {
 		var m pipeline.Manifest
 		if err := json.Unmarshal([]byte(j.Manifest), &m); err == nil {
 			run.Backend, run.Copy, run.Timing = string(m.Backend), m.VideoCopy, m.Timing
+			run.OutputSize = videoSize(m.Files, j.OutputPath)
 		}
 	}
 	return run
+}
+
+// videoSize finds the video among a manifest's files by the output's name,
+// falling back to the largest file, since sidecars are always far smaller.
+func videoSize(files []pipeline.File, output string) int64 {
+	var largest int64
+	for _, f := range files {
+		if f.Name == path.Base(output) {
+			return f.Size
+		}
+		largest = max(largest, f.Size)
+	}
+	return largest
 }
 
 func (s *Server) loadJob(w http.ResponseWriter, r *http.Request, csrf string) (jobData, bool) {

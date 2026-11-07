@@ -45,6 +45,7 @@
     {{if .PushSeconds}}<dt>Push</dt><dd>{{seconds .PushSeconds}}</dd>{{end}}
     {{end}}
     {{if or .Backend .Copy}}<dt>Encoder</dt><dd>{{if .Copy}}stream copy, no video encode{{else}}{{template "encoder" .Backend}}{{end}}</dd>{{end}}
+    {{if .OutputSize}}<dt>Output size</dt><dd>{{size .OutputSize}}{{with shareOf .OutputSize $.Job.SourceSize}} <span class="muted">({{.}} of the source)</span>{{end}}</dd>{{end}}
   </dl>
   <p class="muted small">Start and finish are when the orchestrator handed the job out and got it back. Encode times are on the worker's clock.</p>
 </div>

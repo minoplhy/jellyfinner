@@ -118,6 +118,9 @@ func New(svc *orchestrator.Service, auth jellyfin.API, lastSeen func() map[strin
 		"month":    func(t time.Time) string { return t.Format("2006-01") },
 		// pctOf is a share of a total, for meter thresholds.
 		"pctOf": func(total int64, percent int64) int64 { return total / 100 * percent },
+		// shareOf is part as a percentage of whole, such as an encode's size
+		// against its source, or "" when whole is unknown.
+		"shareOf": shareOf,
 	}
 	for _, page := range []string{"login", "dashboard", "queue", "job", "library", "confirm", "nodes", "nodesecret", "nodeedit", "usage"} {
 		s.pages[page] = template.Must(template.New("layout.html").Funcs(funcs).
@@ -515,4 +518,11 @@ func summary(verb string, done int, errs []string) flashMsg {
 		return flashMsg{"warn", message + " Refused: " + strings.Join(errs, "; ")}
 	}
 	return flashMsg{"ok", message}
+}
+
+func shareOf(part, whole int64) string {
+	if whole <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%.0f%%", float64(part)/float64(whole)*100)
 }

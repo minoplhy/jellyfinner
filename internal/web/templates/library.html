@@ -34,7 +34,7 @@
   <div class="panel flush">
     <div class="table-wrap">
     <table>
-      <thead><tr><th class="check"><input type="checkbox" data-select-all aria-label="Select every title shown"></th><th>Title</th><th>State</th><th class="num">Size</th><th>Job</th></tr></thead>
+      <thead><tr><th class="check"><input type="checkbox" data-select-all aria-label="Select every title shown"></th><th>Title</th><th>State</th><th class="num">Size</th><th class="num">Encoded</th><th>Job</th></tr></thead>
       <tbody>
       {{range .Rows}}
       <tr>
@@ -42,9 +42,10 @@
         <td class="path">{{template "path" .Path}}</td>
         <td>{{template "badge" .State}}</td>
         <td class="num">{{size .Size}}</td>
+        <td class="num">{{if .EncodedSize}}{{size .EncodedSize}} <span class="muted">({{shareOf .EncodedSize .Size}})</span>{{else}}—{{end}}</td>
         <td class="nowrap">{{with .Job}}<a href="{{base}}/jobs/{{.ID}}">{{.State}}</a>{{end}}</td>
       </tr>
-      {{else}}<tr><td class="empty" colspan="5">{{if .Search}}No titles match “{{.Search}}”.{{else}}No titles yet. The scan picks up new files every few minutes, so check that the originals folder is mounted.{{end}}</td></tr>{{end}}
+      {{else}}<tr><td class="empty" colspan="6">{{if .Search}}No titles match “{{.Search}}”.{{else}}No titles yet. The scan picks up new files every few minutes, so check that the originals folder is mounted.{{end}}</td></tr>{{end}}
       </tbody>
     </table>
     </div>

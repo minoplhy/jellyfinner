@@ -25,7 +25,9 @@ type TitleRow struct {
 	Title string
 	State string
 	Size  int64
-	Job   *model.Job
+	// EncodedSize is the published output's size, 0 if none was published.
+	EncodedSize int64
+	Job         *model.Job
 }
 
 // Titles lists titles matching a case-insensitive search.
@@ -54,7 +56,7 @@ func (s *Service) Titles(search string, limit int) ([]TitleRow, int, error) {
 }
 
 func (s *Service) titleRow(src *model.Source, j *model.Job) TitleRow {
-	return TitleRow{Path: src.Path, Title: Title(src.Path), Size: src.Size, Job: j, State: s.titleState(src, j)}
+	return TitleRow{Path: src.Path, Title: Title(src.Path), Size: src.Size, EncodedSize: src.EncodedBytes, Job: j, State: s.titleState(src, j)}
 }
 
 func (s *Service) titleState(src *model.Source, j *model.Job) string {
